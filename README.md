@@ -23,7 +23,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
 - Uses the nearest single ERA5-Land grid cell by default to keep downloads small.
 - Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
 - Aggregates monthly values into stripe periods weighted by the number of covered days in each month.
-- Offers full calendar years only as the default stripe period, or trailing 365-day windows ending on the latest available month-day in each year.
+- Offers full calendar years only as the default stripe period, or a 365-day moving average sampled monthly by default or at an evenly spaced fixed strip count.
 - Colors each stripe period against either:
   - the average over the timeline shown, or
   - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place used at that time.
@@ -150,7 +150,7 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 - Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
 - Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
 - Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
-- Full-calendar-year mode omits partial first and current years. Trailing 365-day mode instead uses full 365-day windows ending on the latest available month-day in each year.
+- Full-calendar-year mode omits partial first and current years. The 365-day moving-average mode expands monthly values to daily coverage, applies a daily rolling mean, and samples the smoothed series monthly or at an evenly spaced fixed count.
 - If the timeline starts before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
 ## Operational notes

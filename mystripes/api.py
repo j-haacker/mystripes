@@ -20,6 +20,7 @@ from mystripes.processing import (
 
 BaselineMode = Literal["timeline_mean", "location_reference"]
 AggregationMode = Literal["full_calendar_years", "rolling_365_day"]
+RollingSampleMode = Literal["monthly", "fixed_count"]
 
 
 def build_stripe_data(
@@ -29,6 +30,8 @@ def build_stripe_data(
     baseline_mode: BaselineMode = "timeline_mean",
     aggregation_mode: AggregationMode = "full_calendar_years",
     rolling_window_end: date | datetime | str | pd.Timestamp | None = None,
+    rolling_sample_mode: RollingSampleMode = "monthly",
+    rolling_strip_count: int | None = None,
     reference_data: pd.DataFrame | Sequence[pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any]] | Mapping[object, Any] | None = None,
     baseline_by_location: Mapping[object, float] | None = None,
 ) -> dict[str, Any]:
@@ -56,6 +59,8 @@ def build_stripe_data(
         normalized_frames,
         aggregation_mode=aggregation_mode,
         rolling_window_end=effective_window_end,
+        rolling_sample_mode=rolling_sample_mode,
+        rolling_strip_count=rolling_strip_count,
     )
 
     result: dict[str, Any] = {
@@ -64,6 +69,8 @@ def build_stripe_data(
         "yearly": yearly,
         "aggregation_mode": aggregation_mode,
         "rolling_window_end": effective_window_end,
+        "rolling_sample_mode": rolling_sample_mode,
+        "rolling_strip_count": rolling_strip_count,
         "baseline_mode": baseline_mode,
     }
 
@@ -96,6 +103,8 @@ def build_stripe_data(
         baseline_by_location=normalized_baseline_by_location,
         aggregation_mode=aggregation_mode,
         rolling_window_end=effective_window_end,
+        rolling_sample_mode=rolling_sample_mode,
+        rolling_strip_count=rolling_strip_count,
     )
     result["baseline_by_location"] = normalized_baseline_by_location
     result["stripe_frame"] = stripe_frame

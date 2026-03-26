@@ -74,6 +74,34 @@ class PublicAPITests(unittest.TestCase):
 
         self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0, 1.0])
 
+    def test_build_stripe_data_supports_rolling_moving_average_options(self) -> None:
+        stripe_data = build_stripe_data(
+            periods=[
+                {
+                    "label": "Vienna",
+                    "start_date": date(2020, 1, 1),
+                    "end_date": date(2021, 6, 30),
+                    "latitude": 48.2082,
+                    "longitude": 16.3738,
+                }
+            ],
+            period_data=[
+                pd.DataFrame(
+                    {
+                        "date": pd.date_range("2020-01-01", "2021-06-01", freq="MS", tz="UTC"),
+                        "temperature": [11.0] * 18,
+                    }
+                )
+            ],
+            aggregation_mode="rolling_365_day",
+            rolling_sample_mode="fixed_count",
+            rolling_strip_count=3,
+            rolling_window_end=date(2021, 6, 30),
+        )
+
+        self.assertEqual(len(stripe_data["stripe_frame"]), 3)
+        self.assertEqual(stripe_data["stripe_frame"]["sample_date"].tolist()[-1], date(2021, 6, 30))
+
     def test_plot_stripes_can_save_svg(self) -> None:
         stripe_data = {
             "stripe_frame": pd.DataFrame(

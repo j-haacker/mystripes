@@ -121,7 +121,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(yearly["window_end"].tolist(), [date(2001, 12, 31)])
         self.assertEqual(yearly["days_covered"].tolist(), [365])
 
-    def test_trailing_365_day_windows_anchor_to_latest_date(self) -> None:
+    def test_rolling_moving_average_samples_monthly_by_default(self) -> None:
         periods = [
             LifePeriod(
                 label="A",
@@ -148,10 +148,48 @@ class ProcessingTests(unittest.TestCase):
             rolling_window_end=date(2022, 6, 30),
         )
 
-        self.assertEqual(yearly["window_end"].tolist(), [date(2021, 6, 30), date(2022, 6, 30)])
-        self.assertEqual(yearly["window_start"].tolist(), [date(2020, 7, 1), date(2021, 7, 1)])
-        self.assertEqual(yearly["days_covered"].tolist(), [365, 365])
-        self.assertEqual(yearly["mean_temp_c"].round(2).tolist(), [10.0, 10.0])
+        self.assertEqual(len(yearly), 19)
+        self.assertEqual(yearly["sample_date"].tolist()[0], date(2020, 12, 31))
+        self.assertEqual(yearly["sample_date"].tolist()[-1], date(2022, 6, 30))
+        self.assertEqual(yearly["window_start"].tolist()[0], date(2020, 1, 2))
+        self.assertEqual(yearly["window_end"].tolist()[-1], date(2022, 6, 30))
+        self.assertTrue((yearly["days_covered"] == 365).all())
+        self.assertTrue((yearly["mean_temp_c"].round(2) == 10.0).all())
+
+    def test_rolling_moving_average_can_use_fixed_strip_count(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2022, 6, 30),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        timestamps = pd.date_range("2020-01-01", "2022-06-01", freq="MS", tz="UTC")
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "temperature_c": [10.0] * len(timestamps),
+            }
+        )
+
+        _, yearly = combine_period_frames(
+            periods,
+            [frame],
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2022, 6, 30),
+            rolling_sample_mode="fixed_count",
+            rolling_strip_count=4,
+        )
+
+        self.assertEqual(len(yearly), 4)
+        self.assertEqual(yearly["sample_date"].tolist()[0], date(2020, 12, 30))
+        self.assertEqual(yearly["sample_date"].tolist()[-1], date(2022, 6, 30))
+        self.assertTrue((yearly["days_covered"] == 365).all())
+        self.assertTrue((yearly["mean_temp_c"].round(2) == 10.0).all())
 
     def test_weighted_location_baseline_uses_days_lived(self) -> None:
         periods = [
@@ -229,6 +267,41 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(stripe_frame["year"].tolist(), [2000, 2001])
         self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [10.0, 20.0])
         self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [1.0, 1.0])
+
+    def test_location_specific_baselines_work_with_rolling_moving_average(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2021, 6, 30),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        frame = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2020-01-01", "2021-06-01", freq="MS", tz="UTC"),
+                "temperature_c": [11.0] * 18,
+            }
+        )
+
+        combined, _ = combine_period_frames(periods, [frame])
+        stripe_frame = build_location_baseline_stripe_frame(
+            combined=combined,
+            baseline_by_location={periods[0].location_key: 10.0},
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2021, 6, 30),
+            rolling_sample_mode="fixed_count",
+            rolling_strip_count=3,
+        )
+
+        self.assertEqual(len(stripe_frame), 3)
+        self.assertEqual(stripe_frame["sample_date"].tolist()[0], date(2020, 12, 30))
+        self.assertEqual(stripe_frame["sample_date"].tolist()[-1], date(2021, 6, 30))
+        self.assertTrue((stripe_frame["baseline_c"].round(2) == 10.0).all())
+        self.assertTrue((stripe_frame["anomaly_c"].round(2) == 1.0).all())
 
 
 if __name__ == "__main__":

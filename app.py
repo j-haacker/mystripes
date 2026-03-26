@@ -156,14 +156,40 @@ def main() -> None:
         options=("full_calendar_years", "rolling_365_day"),
         format_func=lambda value: {
             "full_calendar_years": "Full calendar years only",
-            "rolling_365_day": "Trailing 365-day windows",
+            "rolling_365_day": "365-day moving average",
         }[value],
         help=(
-            "Full calendar years only drops partial birth and current years. Trailing "
-            "365-day windows use full 365-day periods ending on the latest available "
-            "month and day in each year."
+            "Full calendar years only drops partial birth and current years. The 365-day "
+            "moving average mode expands the monthly series to daily values, applies a "
+            "365-day rolling mean, then samples the smoothed series."
         ),
     )
+    rolling_sample_mode = "monthly"
+    rolling_strip_count = None
+    if aggregation_mode == "rolling_365_day":
+        rolling_sample_mode = sidebar.selectbox(
+            "Rolling sample spacing",
+            options=("monthly", "fixed_count"),
+            format_func=lambda value: {
+                "monthly": "Monthly",
+                "fixed_count": "Fixed number of strips",
+            }[value],
+            help=(
+                "Monthly keeps one rolling-average stripe per month using the latest "
+                "available day in that month. Fixed count distributes the chosen number of "
+                "stripes evenly across the available rolling-average dates."
+            ),
+        )
+        if rolling_sample_mode == "fixed_count":
+            rolling_strip_count = int(
+                sidebar.number_input(
+                    "Rolling strips",
+                    min_value=2,
+                    max_value=400,
+                    value=60,
+                    step=1,
+                )
+            )
     width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
@@ -331,6 +357,8 @@ def main() -> None:
                 period_frames,
                 aggregation_mode=aggregation_mode,
                 rolling_window_end=analysis_end,
+                rolling_sample_mode=rolling_sample_mode,
+                rolling_strip_count=rolling_strip_count,
             )
         except (CDSRequestError, ValueError) as exc:
             st.error(str(exc))
@@ -380,6 +408,8 @@ def main() -> None:
                     baseline_by_location=baseline_by_location,
                     aggregation_mode=aggregation_mode,
                     rolling_window_end=analysis_end,
+                    rolling_sample_mode=rolling_sample_mode,
+                    rolling_strip_count=rolling_strip_count,
                 )
                 baseline_metric_value = reference_label
             except (CDSRequestError, ValueError) as exc:
@@ -402,11 +432,19 @@ def main() -> None:
     st.image(png_bytes, use_container_width=True)
 
     metric_columns = st.columns(4)
-    metric_columns[0].metric("Stripes shown", int(stripe_frame["year"].count()))
+    metric_columns[0].metric("Stripes shown", int(len(stripe_frame)))
     metric_columns[1].metric("Baseline", baseline_metric_value)
     metric_columns[2].metric("Warmest anomaly", f"{stripe_frame['anomaly_c'].max():+.2f} C")
     metric_columns[3].metric("Coolest anomaly", f"{stripe_frame['anomaly_c'].min():+.2f} C")
-    st.caption(_aggregation_mode_caption(baseline_label, aggregation_mode, analysis_end))
+    st.caption(
+        _aggregation_mode_caption(
+            baseline_label,
+            aggregation_mode,
+            analysis_end,
+            rolling_sample_mode,
+            rolling_strip_count,
+        )
+    )
     if spatial_mode == "radius" and radius_km is not None:
         st.caption(f"Spatial aggregation: mean across grid cells within {radius_km:.0f} km.")
     elif spatial_mode == "boundary":
@@ -457,6 +495,8 @@ def main() -> None:
         )
     with yearly_tab:
         yearly_display = stripe_frame.copy()
+        if "sample_date" in yearly_display.columns:
+            yearly_display["sample_date"] = yearly_display["sample_date"].astype(str)
         yearly_display["window_start"] = yearly_display["window_start"].astype(str)
         yearly_display["window_end"] = yearly_display["window_end"].astype(str)
         yearly_display["baseline_c"] = yearly_display["baseline_c"].round(2)
@@ -732,11 +772,22 @@ def _resolve_location_reference_period(
     raise ValueError(f"Unsupported reference period mode: {reference_mode}")
 
 
-def _aggregation_mode_caption(baseline_label: str, aggregation_mode: str, analysis_end: date) -> str:
+def _aggregation_mode_caption(
+    baseline_label: str,
+    aggregation_mode: str,
+    analysis_end: date,
+    rolling_sample_mode: str,
+    rolling_strip_count: int | None,
+) -> str:
     if aggregation_mode == "rolling_365_day":
+        sampling_text = (
+            "sampled monthly"
+            if rolling_sample_mode == "monthly"
+            else f"sampled into {rolling_strip_count or 60} evenly spaced strips"
+        )
         return (
-            f"Baseline mode: {baseline_label}. Stripe period: trailing 365-day windows "
-            f"ending on {analysis_end.isoformat()} and the same month-day in earlier years."
+            f"Baseline mode: {baseline_label}. Stripe period: 365-day moving average, "
+            f"{sampling_text}, through {analysis_end.isoformat()}."
         )
 
     return (

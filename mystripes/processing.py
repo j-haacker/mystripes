@@ -75,19 +75,12 @@ def build_periods_from_entries(
 
     return periods, errors
 
-
-def calculate_series_mean_temperature(frame: pd.DataFrame) -> float:
-    if "sample_days" in frame.columns and frame["sample_days"].sum() > 0:
-        weighted_sum = (frame["temperature_c"] * frame["sample_days"]).sum()
-        return float(weighted_sum / frame["sample_days"].sum())
-    return float(frame["temperature_c"].mean())
-
 def build_period_report_tables(
     periods: list[LifePeriod],
     frames_by_period: list[pd.DataFrame],
-    period_baselines: list[float] | None,
     report_start: date,
     report_end: date,
+    period_baselines: list[float] | None = None,
     baseline_start: date | None = None,
     baseline_end: date | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -229,6 +222,7 @@ def _build_period_daily_tables(
         report_end=report_end,
     )
     daily_baseline = _build_daily_baseline_table(
+        periods=periods,
         daily_temperature=daily_temperature,
         period_baselines=period_baselines,
         baseline_start=effective_baseline_start,
@@ -281,6 +275,7 @@ def _build_monthly_temperature_table(
 
 
 def _build_daily_baseline_table(
+    periods: list[LifePeriod],
     daily_temperature: pd.DataFrame,
     period_baselines: list[float] | None,
     baseline_start: date,
@@ -290,17 +285,28 @@ def _build_daily_baseline_table(
     baseline_reference = daily_temperature.reindex(baseline_index)
 
     daily_baseline = pd.DataFrame(index=daily_temperature.index)
-    if period_baselines is not None:
-        if len(period_baselines) != len(daily_temperature.columns):
-            raise ValueError("Each period needs a matching baseline value.")
-        for index, column in enumerate(daily_temperature.columns):
-            daily_baseline[column] = float(period_baselines[index])
-        return daily_baseline
-
-    for column in daily_temperature.columns:
+    reference_by_location: dict[str, pd.Series] = {}
+    for index, column in enumerate(daily_temperature.columns):
+        reference = baseline_reference[column]
+        if period_baselines is not None:
+            reference = pd.Series(
+                float(period_baselines[index]),
+                index=baseline_reference.index,
+                dtype="float64",
+            )
+        else:
+            location_key = periods[index].location_key
+            reference = reference_by_location.get(location_key)
+            if reference is None:
+                reference = _location_reference_series(
+                    periods=periods,
+                    daily_reference=baseline_reference,
+                    location_key=location_key,
+                )
+                reference_by_location[location_key] = reference
         daily_baseline[column] = new_baseline(
             daily_temperature[column],
-            reference=baseline_reference[column],
+            reference=reference,
         )
     return daily_baseline
 
@@ -316,6 +322,37 @@ def _build_daily_anomaly_table(
             daily_baseline[column],
         )
     return daily_anomaly
+
+
+def _location_reference_series(
+    periods: list[LifePeriod],
+    daily_reference: pd.DataFrame,
+    location_key: str,
+) -> pd.Series:
+    matching_columns = [
+        _period_report_key(index, period)
+        for index, period in enumerate(periods)
+        if period.location_key == location_key
+    ]
+    if not matching_columns:
+        raise ValueError(f"Missing reference data for location {location_key}.")
+
+    combined = pd.Series(index=daily_reference.index, dtype="float64")
+    for column in matching_columns:
+        values = pd.to_numeric(daily_reference[column], errors="coerce")
+        overlap = combined.notna() & values.notna()
+        if overlap.any():
+            mismatch = (combined.loc[overlap] - values.loc[overlap]).abs() > 1e-9
+            if mismatch.any():
+                raise ValueError(
+                    f"Inconsistent reference temperatures for location {location_key}."
+                )
+        combined = combined.combine_first(values)
+
+    if combined.dropna().empty:
+        raise ValueError(f"Missing reference temperatures for location {location_key}.")
+
+    return combined
 
 
 def _assemble_merged_daily_series(
@@ -373,14 +410,6 @@ def _assemble_merged_daily_series(
         ]
     ]
 
-
-def unique_locations(periods: list[LifePeriod]) -> dict[str, tuple[float, float]]:
-    unique: dict[str, tuple[float, float]] = {}
-    for period in periods:
-        unique[period.location_key] = (period.latitude, period.longitude)
-    return unique
-
-
 def _parse_coordinates(entry: dict[str, Any], index: int) -> tuple[float, float, str | None]:
     latitude_text = str(entry.get("latitude_text", "")).strip()
     longitude_text = str(entry.get("longitude_text", "")).strip()
@@ -403,6 +432,7 @@ def _parse_coordinates(entry: dict[str, Any], index: int) -> tuple[float, float,
 
 def _sample_start_date(sample_date: date) -> date:
     return sample_date.replace(day=1)
+
 
 def _aggregate_rolling_daily_series_from_daily(
     daily_series: pd.DataFrame,
@@ -546,17 +576,24 @@ def _new_baseline_default(
     data: pd.Series,
     reference: pd.Series | None = None,
 ) -> pd.Series:
-    # This is the single place to change how non-location-specific baselines are computed.
     source = pd.to_numeric(reference if reference is not None else data, errors="coerce").dropna()
     if source.empty:
         name = data.name or "period"
         raise ValueError(f"Missing baseline temperatures for: {name}")
 
-    doy_index = data.index.dayofyear
-    doy_means = data.groupby(doy_index).mean()
-    baseline_value = doy_means.loc[doy_index]
-    baseline_value.index = data.index
-    return pd.Series(baseline_value, index=data.index, dtype="float64")
+    doy_means = source.groupby(source.index.dayofyear).mean()
+    baseline = pd.Series(data.index.dayofyear, index=data.index).map(doy_means).astype("float64")
+
+    if baseline.isna().any() and 365 in doy_means.index:
+        leap_day_mask = baseline.isna() & (pd.Index(data.index.dayofyear) == 366)
+        if leap_day_mask.any():
+            baseline.loc[leap_day_mask] = float(doy_means.loc[365])
+
+    if baseline.isna().any():
+        name = data.name or "period"
+        raise ValueError(f"Missing climatology values for: {name}")
+
+    return baseline
 
 
 def _build_full_period_report(
@@ -719,6 +756,8 @@ def _effective_period_start(
     if index == 0 and first_period_history_days > 0:
         return period.start_date - timedelta(days=first_period_history_days)
     return period.start_date
+
+
 def _join_unique_values(values: pd.Series) -> str:
     ordered_unique = list(dict.fromkeys(str(value) for value in values if str(value).strip()))
     return " + ".join(ordered_unique)

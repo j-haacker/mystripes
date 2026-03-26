@@ -351,6 +351,100 @@ class ProcessingTests(unittest.TestCase):
             [0.0, 0.0],
         )
 
+    def test_reference_window_controls_day_of_year_climatology(self) -> None:
+        periods = [
+            LifePeriod(
+                label="Single place",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2019, 1, 1),
+                end_date=date(2020, 12, 31),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        frame = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2019-01-01", "2020-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [1.0] * 12 + [11.0] * 12,
+            }
+        )
+
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2019, 1, 1),
+            report_end=date(2020, 12, 31),
+            baseline_start=date(2020, 1, 1),
+            baseline_end=date(2020, 12, 31),
+        )
+
+        stripe_frame = aggregate_daily_series_to_stripes(merged_daily)
+        self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [11.0, 11.0])
+        self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [-10.0, 0.0])
+
+    def test_repeated_location_uses_shared_full_timeline_climatology(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A first",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2000, 1, 1),
+                end_date=date(2000, 12, 31),
+                latitude=1.0,
+                longitude=2.0,
+            ),
+            LifePeriod(
+                label="B middle",
+                place_query="B",
+                resolved_name="B",
+                start_date=date(2001, 1, 1),
+                end_date=date(2001, 12, 31),
+                latitude=3.0,
+                longitude=4.0,
+            ),
+            LifePeriod(
+                label="A again",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2002, 1, 1),
+                end_date=date(2002, 12, 31),
+                latitude=1.0,
+                longitude=2.0,
+            ),
+        ]
+        full_timeline = pd.date_range("2000-01-01", "2002-12-01", freq="MS", tz="UTC")
+        frame_a = pd.DataFrame(
+            {
+                "timestamp": full_timeline,
+                "temperature_c": [5.0] * 12 + [10.0] * 12 + [15.0] * 12,
+            }
+        )
+        frame_b = pd.DataFrame(
+            {
+                "timestamp": full_timeline,
+                "temperature_c": [20.0] * len(full_timeline),
+            }
+        )
+
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame_a, frame_b, frame_a],
+            report_start=date(2000, 1, 1),
+            report_end=date(2002, 12, 31),
+            baseline_start=date(2000, 1, 1),
+            baseline_end=date(2002, 12, 31),
+        )
+
+        stripe_frame = aggregate_daily_series_to_stripes(merged_daily)
+        self.assertEqual(stripe_frame["year"].tolist(), [2000, 2001, 2002])
+        self.assertAlmostEqual(float(stripe_frame["baseline_c"].iloc[0]), 10.0, delta=0.02)
+        self.assertAlmostEqual(float(stripe_frame["baseline_c"].iloc[1]), 20.0, delta=0.02)
+        self.assertAlmostEqual(float(stripe_frame["baseline_c"].iloc[2]), 10.0, delta=0.02)
+        self.assertAlmostEqual(float(stripe_frame["anomaly_c"].iloc[0]), -5.0, delta=0.02)
+        self.assertAlmostEqual(float(stripe_frame["anomaly_c"].iloc[1]), 0.0, delta=0.02)
+        self.assertAlmostEqual(float(stripe_frame["anomaly_c"].iloc[2]), 5.0, delta=0.02)
+
     def test_build_merged_daily_series_computes_anomalies_before_merge(self) -> None:
         periods = [
             LifePeriod(
@@ -394,7 +488,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [12.54])
         self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [5.0])
 
-    def test_location_specific_baselines_apply_per_location(self) -> None:
+    def test_explicit_period_climatology_applies_per_period(self) -> None:
         periods = [
             LifePeriod(
                 label="A",
@@ -441,7 +535,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [10.0, 20.0])
         self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [1.0, 1.0])
 
-    def test_location_specific_baselines_work_with_rolling_moving_average(self) -> None:
+    def test_explicit_period_climatology_works_with_rolling_moving_average(self) -> None:
         periods = [
             LifePeriod(
                 label="A",
@@ -481,7 +575,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue((stripe_frame["baseline_c"].round(2) == 10.0).all())
         self.assertTrue((stripe_frame["anomaly_c"].round(2) == 1.0).all())
 
-    def test_location_specific_rolling_crop_happens_after_prestart_history(self) -> None:
+    def test_explicit_period_climatology_rolling_crop_happens_after_prestart_history(self) -> None:
         periods = [
             LifePeriod(
                 label="A",

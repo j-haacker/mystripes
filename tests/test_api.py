@@ -36,7 +36,7 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(stripe_data["stripe_frame"]["year"].tolist(), [2000])
         self.assertIn("anomaly_c", stripe_data["stripe_frame"].columns)
 
-    def test_build_stripe_data_can_use_location_reference_from_input_data(self) -> None:
+    def test_build_stripe_data_uses_day_of_year_climatology(self) -> None:
         stripe_data = build_stripe_data(
             periods=[
                 {
@@ -68,11 +68,10 @@ class PublicAPITests(unittest.TestCase):
                     }
                 ),
             ],
-            baseline_mode="location_reference",
-            baseline_by_location={"A": 10.0, "B": 20.0},
         )
 
-        self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0, 1.0])
+        self.assertEqual(stripe_data["stripe_frame"]["baseline_c"].round(2).tolist(), [11.0, 21.0])
+        self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [0.0, 0.0])
 
     def test_build_stripe_data_supports_rolling_moving_average_options(self) -> None:
         stripe_data = build_stripe_data(

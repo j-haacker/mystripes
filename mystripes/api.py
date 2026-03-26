@@ -14,10 +14,8 @@ from mystripes.processing import (
     aggregate_daily_series_to_stripes,
     build_merged_daily_series,
     build_period_report_tables,
-    calculate_series_mean_temperature,
 )
 
-BaselineMode = Literal["period_mean", "location_reference"]
 AggregationMode = Literal["full_calendar_years", "rolling_365_day"]
 RollingSampleMode = Literal["monthly", "fixed_count"]
 
@@ -26,13 +24,10 @@ def build_stripe_data(
     periods: pd.DataFrame | Sequence[LifePeriod | Mapping[str, Any]] | Mapping[str, Any],
     period_data: pd.DataFrame | Sequence[pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any]] | Mapping[object, Any],
     *,
-    baseline_mode: BaselineMode = "period_mean",
     aggregation_mode: AggregationMode = "full_calendar_years",
     rolling_window_end: date | datetime | str | pd.Timestamp | None = None,
     rolling_sample_mode: RollingSampleMode = "monthly",
     rolling_strip_count: int | None = None,
-    reference_data: pd.DataFrame | Sequence[pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any]] | Mapping[object, Any] | None = None,
-    baseline_by_location: Mapping[object, float] | None = None,
 ) -> dict[str, Any]:
     """Build stripe-ready data from periods plus monthly temperature frames.
 
@@ -45,6 +40,9 @@ def build_stripe_data(
     Each monthly frame must contain a timestamp-like column and a temperature column.
     Supported column names include `timestamp`/`date`/`time` and
     `temperature_c`/`temperature`/`value`.
+
+    Climatology is always computed per period from day-of-year means before the
+    periods are merged into one timeline.
     """
 
     normalized_periods = _coerce_periods(periods)
@@ -62,40 +60,13 @@ def build_stripe_data(
         "rolling_window_end": effective_window_end,
         "rolling_sample_mode": rolling_sample_mode,
         "rolling_strip_count": rolling_strip_count,
-        "baseline_mode": baseline_mode,
     }
-
-    if baseline_mode == "period_mean":
-        period_baselines = None
-    elif baseline_mode == "location_reference":
-        normalized_baseline_by_location = _normalize_baseline_by_location(
-            baseline_by_location,
-            normalized_periods,
-        )
-        if normalized_baseline_by_location is None:
-            reference_frames = _coerce_period_frames(
-                reference_data if reference_data is not None else period_data,
-                normalized_periods,
-            )
-            normalized_baseline_by_location = _calculate_baseline_by_location(
-                normalized_periods,
-                reference_frames,
-            )
-
-        period_baselines = [
-            normalized_baseline_by_location[period.location_key]
-            for period in normalized_periods
-        ]
-        result["baseline_by_location"] = normalized_baseline_by_location
-    else:
-        raise ValueError(f"Unsupported baseline mode: {baseline_mode}")
 
     daily_series = build_merged_daily_series(
         periods=normalized_periods,
         frames_by_period=normalized_frames,
         report_start=timeline_start - timedelta(days=first_period_history_days),
         report_end=effective_window_end,
-        period_baselines=period_baselines,
         baseline_start=timeline_start,
         baseline_end=effective_window_end,
         first_period_history_days=first_period_history_days,
@@ -111,13 +82,11 @@ def build_stripe_data(
     full_report, merged_report = build_period_report_tables(
         periods=normalized_periods,
         frames_by_period=normalized_frames,
-        period_baselines=period_baselines,
         report_start=timeline_start,
         report_end=effective_window_end,
         baseline_start=timeline_start,
         baseline_end=effective_window_end,
     )
-    result["period_baselines"] = period_baselines
     result["daily_temperature"] = daily_series[
         ["daily_date", "sample_date", "current_period", "current_place", "temperature_c"]
     ].copy()
@@ -314,50 +283,6 @@ def _coerce_temperature_frame(frame_like: pd.DataFrame | Sequence[Mapping[str, A
     return normalized.sort_values("timestamp").reset_index(drop=True)
 
 
-def _normalize_baseline_by_location(
-    baseline_by_location: Mapping[object, float] | None,
-    periods: list[LifePeriod],
-) -> dict[str, float] | None:
-    if baseline_by_location is None:
-        return None
-
-    location_keys = {period.location_key for period in periods}
-    labels_to_location = _unique_period_label_mapping(periods)
-    normalized: dict[str, float] = {}
-
-    for raw_key, raw_value in baseline_by_location.items():
-        if raw_key in location_keys:
-            normalized[str(raw_key)] = float(raw_value)
-            continue
-        if raw_key in labels_to_location:
-            normalized[labels_to_location[str(raw_key)]] = float(raw_value)
-            continue
-        if isinstance(raw_key, int) and 0 <= raw_key < len(periods):
-            normalized[periods[raw_key].location_key] = float(raw_value)
-            continue
-        raise KeyError(
-            f"Unknown baseline key {raw_key!r}. Use a period label, period index, or location_key."
-        )
-
-    return normalized
-
-
-def _calculate_baseline_by_location(
-    periods: list[LifePeriod],
-    reference_frames: list[pd.DataFrame],
-) -> dict[str, float]:
-    grouped_frames: dict[str, list[pd.DataFrame]] = {}
-    for period, frame in zip(periods, reference_frames, strict=True):
-        grouped_frames.setdefault(period.location_key, []).append(frame)
-
-    baselines: dict[str, float] = {}
-    for location_key, frames in grouped_frames.items():
-        baselines[location_key] = calculate_series_mean_temperature(
-            pd.concat(frames, ignore_index=True)
-        )
-    return baselines
-
-
 def _extract_stripe_frame(stripe_data: Mapping[str, Any] | pd.DataFrame) -> pd.DataFrame:
     if isinstance(stripe_data, pd.DataFrame):
         stripe_frame = stripe_data.copy()
@@ -418,17 +343,5 @@ def _coerce_bounding_box(value: Any) -> tuple[float, float, float, float] | None
     if isinstance(value, list) and len(value) == 4:
         return tuple(float(item) for item in value)
     raise ValueError("`bounding_box` must contain four numeric values when provided.")
-
-
-def _unique_period_label_mapping(periods: list[LifePeriod]) -> dict[str, str]:
-    labels_to_location: dict[str, str] = {}
-    for period in periods:
-        if period.label in labels_to_location and labels_to_location[period.label] != period.location_key:
-            raise ValueError(
-                "Period labels must be unique when using label-keyed baseline mappings."
-            )
-        labels_to_location[period.label] = period.location_key
-    return labels_to_location
-
 
 __all__ = ["build_stripe_data", "plot_stripes"]

@@ -7,7 +7,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
 ## Why this stack
 
 - `Streamlit` keeps the main UI simple enough for non-technical users and easy to deploy from GitHub.
-- `FastAPI` provides a tiny programmatic render API for automation and embed workflows.
+- `mystrips.api` exposes a small Python API for reusable scripts and notebooks.
 - `cdsapi` uses the official Copernicus Climate Data Store API flow for ERA5-Land downloads.
 - `matplotlib` gives exact export control for PNG, SVG, and PDF.
 
@@ -27,7 +27,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
   - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place used at that time.
 - Supports location-specific reference periods of `1961-2010`, the timeline's own lifetime window, or a custom date range.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
-- Includes a tiny API for rendering strips programmatically.
+- Includes a small Python API for preparing stripe data and plotting or saving the result.
 
 ## Local run
 
@@ -60,38 +60,18 @@ The exported strips are intentionally lightweight, so they can be reused in emai
    streamlit run app.py
    ```
 
-## Tiny API
+## Python API
 
-MyStrips now includes a small FastAPI app for programmatic rendering.
+For scripts and notebooks, use `build_stripe_data(...)` to turn periods plus monthly temperature frames into a stripe-data bundle, then pass that bundle to `plot_stripes(...)` to render or save the figure.
 
-Start it locally with:
+```python
+from mystrips.api import build_stripe_data, plot_stripes
 
-```bash
-uvicorn api:app --reload
+stripe_data = build_stripe_data(periods=periods, period_data=monthly_frames)
+figure = plot_stripes(stripe_data, output_path="mystrips.svg")
 ```
 
-Available endpoints:
-
-- `GET /health`
-- `GET /v1/palette`
-- `POST /v1/render`
-
-Example:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/render \
-  -H "Content-Type: application/json" \
-  -o mystrips.svg \
-  -d '{
-    "anomalies": [-0.8, -0.4, 0.1, 0.6, 1.0],
-    "width_px": 1200,
-    "height_px": 180,
-    "dpi": 200,
-    "format": "svg"
-  }'
-```
-
-This is useful when you want to generate small strip graphics for signatures, presentation templates, reports, or website components without going through the Streamlit UI.
+The first function accepts periods as dicts, lists, or pandas DataFrames, and monthly data as lists, dicts, or pandas DataFrames. The second function plots from the returned bundle and can save `PNG`, `SVG`, or `PDF`.
 
 ## Pixi
 
@@ -99,7 +79,6 @@ If you use Pixi, this repository includes [pixi.toml](pixi.toml) with ready-to-r
 
 ```bash
 pixi run start
-pixi run api
 pixi run test
 ```
 

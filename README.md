@@ -1,6 +1,6 @@
 # MyStripes
 
-![MyStripes preview](mystripes.png)
+![MyStripes preview](https://raw.githubusercontent.com/j-haacker/mystripes/main/mystripes.png)
 
 MyStripes turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.
 
@@ -74,6 +74,15 @@ python -m build
 python -m twine check dist/*
 python -m twine upload dist/*
 ```
+
+Trusted Publishing is prepared in [.github/workflows/release.yml](.github/workflows/release.yml). After adding this repository as a trusted publisher on PyPI, publishing a release is:
+
+1. Bump the version in [pyproject.toml](pyproject.toml).
+2. Commit and push to `main`.
+3. Create and push a tag such as `v0.1.0`.
+4. Let GitHub Actions build and publish the package to PyPI.
+
+The workflow uses the GitHub environment name `pypi`, so you can add deployment protection rules there if you want a manual approval step before upload.
 
 ## Python API
 

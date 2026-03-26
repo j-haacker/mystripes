@@ -37,5 +37,10 @@ dev = [
   "twine>=5.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/j-haacker/mystripes"
+Repository = "https://github.com/j-haacker/mystripes"
+Issues = "https://github.com/j-haacker/mystripes/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["mystripes"]

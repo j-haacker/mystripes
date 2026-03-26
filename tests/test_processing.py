@@ -7,12 +7,10 @@ import pandas as pd
 
 from mystripes.models import LifePeriod
 from mystripes.processing import (
-    build_location_baseline_stripe_frame,
+    aggregate_daily_series_to_stripes,
+    build_merged_daily_series,
     build_periods_from_entries,
-    build_stripe_frame,
-    calculate_life_period_baseline,
-    calculate_weighted_location_baseline,
-    combine_period_frames,
+    build_period_report_tables,
 )
 
 
@@ -48,7 +46,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(periods[1].start_date, date(2004, 7, 1))
         self.assertEqual(periods[1].end_date, date(2005, 12, 31))
 
-    def test_combine_period_frames_and_build_stripes(self) -> None:
+    def test_daily_series_aggregates_to_full_year_stripes(self) -> None:
         periods = [
             LifePeriod(
                 label="A",
@@ -83,16 +81,19 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        _, yearly = combine_period_frames(periods, [frame_a, frame_b])
+        daily_series = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame_a, frame_b],
+            report_start=date(2000, 1, 1),
+            report_end=date(2001, 12, 31),
+        )
+        yearly = aggregate_daily_series_to_stripes(daily_series)
         self.assertEqual(yearly["year"].tolist(), [2000, 2001])
         self.assertEqual(yearly["mean_temp_c"].round(2).tolist(), [11.0, 14.0])
+        self.assertEqual(yearly["baseline_c"].round(2).tolist(), [11.0, 14.0])
+        self.assertEqual(yearly["anomaly_c"].round(2).tolist(), [0.0, 0.0])
         self.assertEqual(yearly["window_start"].tolist(), [date(2000, 1, 1), date(2001, 1, 1)])
         self.assertEqual(yearly["window_end"].tolist(), [date(2000, 12, 31), date(2001, 12, 31)])
-
-        baseline = calculate_life_period_baseline(yearly)
-        stripe_frame = build_stripe_frame(yearly, baseline)
-        self.assertAlmostEqual(baseline, (11.0 * 366 + 14.0 * 365) / (366 + 365))
-        self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [-1.5, 1.5])
 
     def test_full_calendar_years_drop_partial_years(self) -> None:
         periods = [
@@ -114,7 +115,13 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        _, yearly = combine_period_frames(periods, [frame])
+        daily_series = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2000, 6, 1),
+            report_end=date(2002, 3, 31),
+        )
+        yearly = aggregate_daily_series_to_stripes(daily_series)
 
         self.assertEqual(yearly["year"].tolist(), [2001])
         self.assertEqual(yearly["window_start"].tolist(), [date(2001, 1, 1)])
@@ -141,9 +148,14 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        _, yearly = combine_period_frames(
-            periods,
-            [frame],
+        daily_series = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2020, 1, 1),
+            report_end=date(2022, 6, 30),
+        )
+        yearly = aggregate_daily_series_to_stripes(
+            daily_series,
             aggregation_mode="rolling_365_day",
             rolling_window_end=date(2022, 6, 30),
         )
@@ -176,11 +188,18 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        _, yearly = combine_period_frames(
-            periods,
-            [frame],
+        daily_series = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2019, 1, 1),
+            report_end=date(2020, 3, 31),
+            first_period_history_days=364,
+        )
+        yearly = aggregate_daily_series_to_stripes(
+            daily_series,
             aggregation_mode="rolling_365_day",
             rolling_window_end=date(2020, 3, 31),
+            rolling_crop_start=date(2020, 1, 1),
         )
 
         self.assertEqual(yearly["sample_date"].tolist(), [date(2020, 1, 31), date(2020, 2, 29), date(2020, 3, 31)])
@@ -207,9 +226,14 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        _, yearly = combine_period_frames(
-            periods,
-            [frame],
+        daily_series = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2020, 1, 1),
+            report_end=date(2022, 6, 30),
+        )
+        yearly = aggregate_daily_series_to_stripes(
+            daily_series,
             aggregation_mode="rolling_365_day",
             rolling_window_end=date(2022, 6, 30),
             rolling_sample_mode="fixed_count",
@@ -222,14 +246,119 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue((yearly["days_covered"] == 365).all())
         self.assertTrue((yearly["mean_temp_c"].round(2) == 10.0).all())
 
-    def test_weighted_location_baseline_uses_days_lived(self) -> None:
+    def test_period_report_tables_keep_one_column_per_entered_period(self) -> None:
+        periods = [
+            LifePeriod(
+                label="Vienna childhood",
+                place_query="Vienna",
+                resolved_name="Vienna, Austria",
+                start_date=date(2000, 1, 1),
+                end_date=date(2000, 1, 31),
+                latitude=48.2082,
+                longitude=16.3738,
+            ),
+            LifePeriod(
+                label="Vienna return",
+                place_query="Vienna",
+                resolved_name="Vienna, Austria",
+                start_date=date(2000, 2, 1),
+                end_date=date(2000, 2, 29),
+                latitude=48.2082,
+                longitude=16.3738,
+            ),
+        ]
+        timestamps = pd.date_range("2000-01-01", "2000-02-01", freq="MS", tz="UTC")
+        frame_a = pd.DataFrame({"timestamp": timestamps, "temperature_c": [1.0, 2.0]})
+        frame_b = pd.DataFrame({"timestamp": timestamps, "temperature_c": [10.0, 20.0]})
+
+        full_report, merged_report = build_period_report_tables(
+            periods=periods,
+            frames_by_period=[frame_a, frame_b],
+            period_baselines=[0.5, 15.0],
+            report_start=date(2000, 1, 1),
+            report_end=date(2000, 2, 29),
+        )
+
+        self.assertEqual(
+            full_report["Period 1: Vienna childhood temperature_c"].round(2).tolist(),
+            [1.0, 2.0],
+        )
+        self.assertEqual(
+            full_report["Period 2: Vienna return temperature_c"].round(2).tolist(),
+            [10.0, 20.0],
+        )
+        self.assertEqual(
+            full_report["Period 1: Vienna childhood anomaly_c"].round(2).tolist(),
+            [0.5, 1.5],
+        )
+        self.assertEqual(
+            full_report["Period 2: Vienna return anomaly_c"].round(2).tolist(),
+            [-5.0, 5.0],
+        )
+        self.assertEqual(
+            merged_report["current_period"].tolist(),
+            ["Period 1: Vienna childhood", "Period 2: Vienna return"],
+        )
+        self.assertEqual(merged_report["temperature_c"].round(2).tolist(), [1.0, 20.0])
+
+    def test_period_report_tables_derive_different_means_per_period(self) -> None:
+        periods = [
+            LifePeriod(
+                label="Cold place",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2000, 1, 1),
+                end_date=date(2000, 1, 31),
+                latitude=1.0,
+                longitude=2.0,
+            ),
+            LifePeriod(
+                label="Warm place",
+                place_query="B",
+                resolved_name="B",
+                start_date=date(2000, 2, 1),
+                end_date=date(2000, 2, 29),
+                latitude=3.0,
+                longitude=4.0,
+            ),
+        ]
+        timestamps = pd.date_range("2000-01-01", "2000-02-01", freq="MS", tz="UTC")
+        cold_frame = pd.DataFrame({"timestamp": timestamps, "temperature_c": [1.0, 3.0]})
+        warm_frame = pd.DataFrame({"timestamp": timestamps, "temperature_c": [11.0, 15.0]})
+
+        full_report, _ = build_period_report_tables(
+            periods=periods,
+            frames_by_period=[cold_frame, warm_frame],
+            period_baselines=None,
+            report_start=date(2000, 1, 1),
+            report_end=date(2000, 2, 29),
+        )
+
+        self.assertEqual(
+            full_report["Period 1: Cold place longterm_mean_c"].round(2).tolist(),
+            [1.0, 3.0],
+        )
+        self.assertEqual(
+            full_report["Period 2: Warm place longterm_mean_c"].round(2).tolist(),
+            [11.0, 15.0],
+        )
+        self.assertEqual(
+            full_report["Period 1: Cold place anomaly_c"].round(2).tolist(),
+            [0.0, 0.0],
+        )
+        self.assertEqual(
+            full_report["Period 2: Warm place anomaly_c"].round(2).tolist(),
+            [0.0, 0.0],
+        )
+
+    def test_build_merged_daily_series_computes_anomalies_before_merge(self) -> None:
         periods = [
             LifePeriod(
                 label="First",
                 place_query="A",
                 resolved_name="A",
                 start_date=date(2000, 1, 1),
-                end_date=date(2000, 1, 10),
+                end_date=date(2000, 6, 30),
                 latitude=1.0,
                 longitude=2.0,
             ),
@@ -237,20 +366,33 @@ class ProcessingTests(unittest.TestCase):
                 label="Second",
                 place_query="B",
                 resolved_name="B",
-                start_date=date(2000, 1, 11),
-                end_date=date(2000, 1, 30),
+                start_date=date(2000, 7, 1),
+                end_date=date(2000, 12, 31),
                 latitude=3.0,
                 longitude=4.0,
             ),
         ]
-        baseline = calculate_weighted_location_baseline(
-            periods,
-            baseline_by_location={
-                periods[0].location_key: 10.0,
-                periods[1].location_key: 20.0,
-            },
+        year_2000 = pd.date_range("2000-01-01", "2000-12-01", freq="MS", tz="UTC")
+        frame_a = pd.DataFrame({"timestamp": year_2000, "temperature_c": [10.0] * len(year_2000)})
+        frame_b = pd.DataFrame({"timestamp": year_2000, "temperature_c": [25.0] * len(year_2000)})
+
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame_a, frame_b],
+            report_start=date(2000, 1, 1),
+            report_end=date(2000, 12, 31),
+            period_baselines=[5.0, 20.0],
         )
-        self.assertAlmostEqual(baseline, (10 * 10 + 20 * 20) / 30)
+
+        self.assertEqual(len(merged_daily), 366)
+        self.assertTrue((merged_daily.iloc[:182]["anomaly_c"].round(2) == 5.0).all())
+        self.assertTrue((merged_daily.iloc[182:]["anomaly_c"].round(2) == 5.0).all())
+        self.assertEqual(merged_daily.iloc[0]["current_period"], "Period 1: First")
+        self.assertEqual(merged_daily.iloc[-1]["current_period"], "Period 2: Second")
+
+        stripe_frame = aggregate_daily_series_to_stripes(merged_daily)
+        self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [12.54])
+        self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [5.0])
 
     def test_location_specific_baselines_apply_per_location(self) -> None:
         periods = [
@@ -286,14 +428,14 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        combined, _ = combine_period_frames(periods, [frame_a, frame_b])
-        stripe_frame = build_location_baseline_stripe_frame(
-            combined=combined,
-            baseline_by_location={
-                periods[0].location_key: 10.0,
-                periods[1].location_key: 20.0,
-            },
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame_a, frame_b],
+            report_start=date(2000, 1, 1),
+            report_end=date(2001, 12, 31),
+            period_baselines=[10.0, 20.0],
         )
+        stripe_frame = aggregate_daily_series_to_stripes(merged_daily)
 
         self.assertEqual(stripe_frame["year"].tolist(), [2000, 2001])
         self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [10.0, 20.0])
@@ -318,10 +460,15 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        combined, _ = combine_period_frames(periods, [frame])
-        stripe_frame = build_location_baseline_stripe_frame(
-            combined=combined,
-            baseline_by_location={periods[0].location_key: 10.0},
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2020, 1, 1),
+            report_end=date(2021, 6, 30),
+            period_baselines=[10.0],
+        )
+        stripe_frame = aggregate_daily_series_to_stripes(
+            merged_daily,
             aggregation_mode="rolling_365_day",
             rolling_window_end=date(2021, 6, 30),
             rolling_sample_mode="fixed_count",
@@ -353,15 +500,16 @@ class ProcessingTests(unittest.TestCase):
             }
         )
 
-        combined, _ = combine_period_frames(
-            periods,
-            [frame],
-            aggregation_mode="rolling_365_day",
-            rolling_window_end=date(2020, 3, 31),
+        merged_daily = build_merged_daily_series(
+            periods=periods,
+            frames_by_period=[frame],
+            report_start=date(2019, 1, 1),
+            report_end=date(2020, 3, 31),
+            period_baselines=[10.0],
+            first_period_history_days=364,
         )
-        stripe_frame = build_location_baseline_stripe_frame(
-            combined=combined,
-            baseline_by_location={periods[0].location_key: 10.0},
+        stripe_frame = aggregate_daily_series_to_stripes(
+            merged_daily,
             aggregation_mode="rolling_365_day",
             rolling_window_end=date(2020, 3, 31),
             rolling_crop_start=date(2020, 1, 1),

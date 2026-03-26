@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,14 +11,13 @@ from matplotlib.figure import Figure
 from mystripes.models import LifePeriod
 from mystripes.plotting import export_figure_bytes, render_stripes_figure
 from mystripes.processing import (
-    build_location_baseline_stripe_frame,
-    build_stripe_frame,
-    calculate_life_period_baseline,
+    aggregate_daily_series_to_stripes,
+    build_merged_daily_series,
+    build_period_report_tables,
     calculate_series_mean_temperature,
-    combine_period_frames,
 )
 
-BaselineMode = Literal["timeline_mean", "location_reference"]
+BaselineMode = Literal["period_mean", "location_reference"]
 AggregationMode = Literal["full_calendar_years", "rolling_365_day"]
 RollingSampleMode = Literal["monthly", "fixed_count"]
 
@@ -27,7 +26,7 @@ def build_stripe_data(
     periods: pd.DataFrame | Sequence[LifePeriod | Mapping[str, Any]] | Mapping[str, Any],
     period_data: pd.DataFrame | Sequence[pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any]] | Mapping[object, Any],
     *,
-    baseline_mode: BaselineMode = "timeline_mean",
+    baseline_mode: BaselineMode = "period_mean",
     aggregation_mode: AggregationMode = "full_calendar_years",
     rolling_window_end: date | datetime | str | pd.Timestamp | None = None,
     rolling_sample_mode: RollingSampleMode = "monthly",
@@ -54,21 +53,11 @@ def build_stripe_data(
         period.end_date for period in normalized_periods
     )
     effective_rolling_crop_start = min(period.start_date for period in normalized_periods)
-
-    combined, yearly = combine_period_frames(
-        normalized_periods,
-        normalized_frames,
-        aggregation_mode=aggregation_mode,
-        rolling_window_end=effective_window_end,
-        rolling_crop_start=effective_rolling_crop_start,
-        rolling_sample_mode=rolling_sample_mode,
-        rolling_strip_count=rolling_strip_count,
-    )
+    first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
+    timeline_start = min(period.start_date for period in normalized_periods)
 
     result: dict[str, Any] = {
         "periods": normalized_periods,
-        "combined": combined,
-        "yearly": yearly,
         "aggregation_mode": aggregation_mode,
         "rolling_window_end": effective_window_end,
         "rolling_sample_mode": rolling_sample_mode,
@@ -76,40 +65,65 @@ def build_stripe_data(
         "baseline_mode": baseline_mode,
     }
 
-    if baseline_mode == "timeline_mean":
-        baseline_c = calculate_life_period_baseline(yearly)
-        stripe_frame = build_stripe_frame(yearly, baseline_c)
-        result["baseline_c"] = baseline_c
-        result["stripe_frame"] = stripe_frame
-        return result
+    if baseline_mode == "period_mean":
+        period_baselines = None
+    elif baseline_mode == "location_reference":
+        normalized_baseline_by_location = _normalize_baseline_by_location(
+            baseline_by_location,
+            normalized_periods,
+        )
+        if normalized_baseline_by_location is None:
+            reference_frames = _coerce_period_frames(
+                reference_data if reference_data is not None else period_data,
+                normalized_periods,
+            )
+            normalized_baseline_by_location = _calculate_baseline_by_location(
+                normalized_periods,
+                reference_frames,
+            )
 
-    if baseline_mode != "location_reference":
+        period_baselines = [
+            normalized_baseline_by_location[period.location_key]
+            for period in normalized_periods
+        ]
+        result["baseline_by_location"] = normalized_baseline_by_location
+    else:
         raise ValueError(f"Unsupported baseline mode: {baseline_mode}")
 
-    normalized_baseline_by_location = _normalize_baseline_by_location(
-        baseline_by_location,
-        normalized_periods,
+    daily_series = build_merged_daily_series(
+        periods=normalized_periods,
+        frames_by_period=normalized_frames,
+        report_start=timeline_start - timedelta(days=first_period_history_days),
+        report_end=effective_window_end,
+        period_baselines=period_baselines,
+        baseline_start=timeline_start,
+        baseline_end=effective_window_end,
+        first_period_history_days=first_period_history_days,
     )
-    if normalized_baseline_by_location is None:
-        reference_frames = _coerce_period_frames(
-            reference_data if reference_data is not None else period_data,
-            normalized_periods,
-        )
-        normalized_baseline_by_location = _calculate_baseline_by_location(
-            normalized_periods,
-            reference_frames,
-        )
-
-    stripe_frame = build_location_baseline_stripe_frame(
-        combined=combined,
-        baseline_by_location=normalized_baseline_by_location,
+    stripe_frame = aggregate_daily_series_to_stripes(
+        daily_series=daily_series,
         aggregation_mode=aggregation_mode,
         rolling_window_end=effective_window_end,
         rolling_crop_start=effective_rolling_crop_start,
         rolling_sample_mode=rolling_sample_mode,
         rolling_strip_count=rolling_strip_count,
     )
-    result["baseline_by_location"] = normalized_baseline_by_location
+    full_report, merged_report = build_period_report_tables(
+        periods=normalized_periods,
+        frames_by_period=normalized_frames,
+        period_baselines=period_baselines,
+        report_start=timeline_start,
+        report_end=effective_window_end,
+        baseline_start=timeline_start,
+        baseline_end=effective_window_end,
+    )
+    result["period_baselines"] = period_baselines
+    result["daily_temperature"] = daily_series[
+        ["daily_date", "sample_date", "current_period", "current_place", "temperature_c"]
+    ].copy()
+    result["daily_series"] = daily_series
+    result["full_report"] = full_report
+    result["merged_report"] = merged_report
     result["stripe_frame"] = stripe_frame
     return result
 

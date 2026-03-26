@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pprint import pformat
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -31,13 +32,10 @@ from mystripes.notices import (
 )
 from mystripes.plotting import export_figure_bytes, render_stripes_figure
 from mystripes.processing import (
-    build_location_baseline_stripe_frame,
+    aggregate_daily_series_to_stripes,
+    build_merged_daily_series,
+    build_period_report_tables,
     build_periods_from_entries,
-    build_stripe_frame,
-    calculate_series_mean_temperature,
-    calculate_life_period_baseline,
-    combine_period_frames,
-    unique_locations,
 )
 
 st.set_page_config(
@@ -102,55 +100,6 @@ def main() -> None:
         radius_km = float(
             sidebar.number_input("Radius (km)", min_value=5.0, max_value=250.0, value=25.0, step=5.0)
         )
-    baseline_mode = sidebar.selectbox(
-        "Baseline",
-        options=(
-            "Life-period mean",
-            "Location-specific reference period",
-        ),
-        help=(
-            "The location-specific option makes extra ERA5-Land requests for each unique "
-            "location and computes each month's anomaly relative to that location's own "
-            "reference-period baseline."
-        ),
-    )
-    location_reference_mode = None
-    custom_reference_start = None
-    custom_reference_end = None
-    if baseline_mode == "Location-specific reference period":
-        location_reference_mode = sidebar.selectbox(
-            "Reference period",
-            options=(
-                "1961-2010 climate normal",
-                "Lifetime period",
-                "Custom",
-            ),
-            help=(
-                "Choose which period should define the local baseline for each location. "
-                "Lifetime period uses your full available timeline, clipped to the ERA5-Land "
-                "dataset window."
-            ),
-        )
-        if location_reference_mode == "Custom":
-            default_reference_start = max(dataset_window.min_start, date(1961, 1, 1))
-            default_reference_end = min(analysis_end, date(1990, 12, 31))
-            if default_reference_end < default_reference_start:
-                default_reference_end = default_reference_start
-
-            custom_reference_start = sidebar.date_input(
-                "Reference start",
-                value=default_reference_start,
-                min_value=dataset_window.min_start,
-                max_value=analysis_end,
-                key="custom_reference_start",
-            )
-            custom_reference_end = sidebar.date_input(
-                "Reference end",
-                value=max(custom_reference_start, default_reference_end),
-                min_value=custom_reference_start,
-                max_value=analysis_end,
-                key="custom_reference_end",
-            )
     aggregation_mode = sidebar.selectbox(
         "Stripe period",
         options=("full_calendar_years", "rolling_365_day"),
@@ -199,6 +148,11 @@ def main() -> None:
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
     file_stem = sidebar.text_input("Download name", value="mystripes")
+    debug_mode = sidebar.checkbox(
+        "Debug mode",
+        key="debug_mode",
+        help="Print diagnostic information to stdout / server logs.",
+    )
 
     _render_credit_and_license_panel(today.year)
 
@@ -221,6 +175,8 @@ def main() -> None:
         analysis_end=analysis_end,
         analysis_min_start=dataset_window.min_start,
     )
+    debug_period_aliases = _build_debug_period_aliases(periods_preview)
+    debug_period_identifications = _build_debug_period_identifications(periods_preview)
     if birth_date < dataset_window.min_start:
         st.caption(
             f"ERA5-Land begins on {dataset_window.min_start.isoformat()}, so the stripes start "
@@ -332,6 +288,19 @@ def main() -> None:
 
     for error in preview_errors:
         st.error(error)
+    if debug_period_identifications:
+        _debug_print(
+            debug_mode,
+            "period_aliases",
+            debug_period_identifications,
+            period_aliases=debug_period_aliases,
+        )
+    _debug_print(
+        debug_mode,
+        "preview_summary",
+        {"period_count": len(periods_preview), "errors": preview_errors},
+        period_aliases=debug_period_aliases,
+    )
 
     generate = st.button("Generate stripes", type="primary", disabled=bool(preview_errors))
     if not generate:
@@ -342,11 +311,42 @@ def main() -> None:
             "Missing CDS credentials. Add them to Streamlit secrets, environment variables, "
             "enter a session-only override, or save a local token from the app sidebar."
         )
+        _debug_print(debug_mode, "missing_cds_credentials", period_aliases=debug_period_aliases)
         return
+
+    _debug_print(
+        debug_mode,
+        "generate_request",
+        {
+            "report_start": max(birth_date, dataset_window.min_start).isoformat(),
+            "analysis_end": analysis_end.isoformat(),
+            "spatial_mode": spatial_mode,
+            "radius_km": radius_km,
+            "baseline_mode": "latest_period_baseline",
+            "aggregation_mode": aggregation_mode,
+            "rolling_sample_mode": rolling_sample_mode,
+            "rolling_strip_count": rolling_strip_count,
+            "cds_source": active_cds_config.source,
+            "periods": [
+                {
+                    "label": period.label,
+                    "place": period.display_name,
+                    "start": period.start_date.isoformat(),
+                    "end": period.end_date.isoformat(),
+                    "latitude": round(period.latitude, 4),
+                    "longitude": round(period.longitude, 4),
+                }
+                for period in periods_preview
+            ],
+        },
+        period_aliases=debug_period_aliases,
+    )
 
     with st.spinner("Downloading ERA5-Land monthly data for your selected periods..."):
         try:
+            report_start = max(birth_date, dataset_window.min_start)
             rolling_crop_start = min(period.start_date for period in periods_preview)
+            first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
             period_frames = [
                 fetch_point_temperature_series(
                     config=active_cds_config,
@@ -354,11 +354,11 @@ def main() -> None:
                     longitude=period.longitude,
                     start_date=max(
                         dataset_window.min_start,
-                        period.start_date - timedelta(days=364),
+                        report_start - timedelta(days=364),
                     )
                     if aggregation_mode == "rolling_365_day" and index == 0
-                    else period.start_date,
-                    end_date=period.end_date,
+                    else report_start,
+                    end_date=analysis_end,
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
                     boundary_geojson=period.boundary_geojson,
@@ -366,71 +366,64 @@ def main() -> None:
                 )
                 for index, period in enumerate(periods_preview)
             ]
-            combined, yearly = combine_period_frames(
-                periods_preview,
-                period_frames,
-                aggregation_mode=aggregation_mode,
-                rolling_window_end=analysis_end,
-                rolling_crop_start=rolling_crop_start,
-                rolling_sample_mode=rolling_sample_mode,
-                rolling_strip_count=rolling_strip_count,
-            )
         except (CDSRequestError, ValueError) as exc:
+            _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
             st.error(str(exc))
             return
+    _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
 
-    baseline_label = baseline_mode
-    baseline_metric_value = ""
-    if baseline_mode == "Life-period mean":
-        baseline_c = calculate_life_period_baseline(yearly)
-        baseline_metric_value = f"{baseline_c:.2f} C"
-        stripe_frame = build_stripe_frame(yearly, baseline_c)
-    else:
-        reference_start, reference_end, reference_label = _resolve_location_reference_period(
-            reference_mode=location_reference_mode or "1961-2010 climate normal",
-            analysis_start=max(birth_date, dataset_window.min_start),
-            analysis_end=analysis_end,
-            custom_start=custom_reference_start,
-            custom_end=custom_reference_end,
+    baseline_label = "Per-period baseline"
+    baseline_metric_value = "Latest implementation"
+    period_baselines: list[float] | None = None
+    _debug_print(
+        debug_mode,
+        "period_baseline_mode",
+        "Using the latest period baseline implementation from processing.new_baseline().",
+        period_aliases=debug_period_aliases,
+    )
+
+    try:
+        merged_daily = build_merged_daily_series(
+            periods=periods_preview,
+            frames_by_period=period_frames,
+            report_start=report_start - timedelta(days=first_period_history_days),
+            report_end=analysis_end,
+            period_baselines=period_baselines,
+            baseline_start=report_start,
+            baseline_end=analysis_end,
+            first_period_history_days=first_period_history_days,
         )
-        baseline_label = (
-            "Location-specific reference period "
-            f"({reference_start.isoformat()} to {reference_end.isoformat()})"
+        stripe_frame = aggregate_daily_series_to_stripes(
+            daily_series=merged_daily,
+            aggregation_mode=aggregation_mode,
+            rolling_window_end=analysis_end,
+            rolling_crop_start=rolling_crop_start,
+            rolling_sample_mode=rolling_sample_mode,
+            rolling_strip_count=rolling_strip_count,
         )
-        with st.spinner(
-            "Calculating location-specific baselines for "
-            f"{reference_start.isoformat()} to {reference_end.isoformat()}..."
-        ):
-            try:
-                baseline_by_location: dict[str, float] = {}
-                periods_by_location = {period.location_key: period for period in periods_preview}
-                for location_key, (latitude, longitude) in unique_locations(periods_preview).items():
-                    period = periods_by_location[location_key]
-                    baseline_series = fetch_point_temperature_series(
-                        config=active_cds_config,
-                        latitude=latitude,
-                        longitude=longitude,
-                        start_date=reference_start,
-                        end_date=reference_end,
-                        spatial_mode=spatial_mode,
-                        radius_km=radius_km,
-                        boundary_geojson=period.boundary_geojson,
-                        boundary_bbox=period.bounding_box,
-                    )
-                    baseline_by_location[location_key] = calculate_series_mean_temperature(baseline_series)
-                stripe_frame = build_location_baseline_stripe_frame(
-                    combined=combined,
-                    baseline_by_location=baseline_by_location,
-                    aggregation_mode=aggregation_mode,
-                    rolling_window_end=analysis_end,
-                    rolling_crop_start=rolling_crop_start,
-                    rolling_sample_mode=rolling_sample_mode,
-                    rolling_strip_count=rolling_strip_count,
-                )
-                baseline_metric_value = reference_label
-            except (CDSRequestError, ValueError) as exc:
-                st.error(str(exc))
-                return
+    except ValueError as exc:
+        _debug_print(debug_mode, "stripe_aggregation_error", str(exc), period_aliases=debug_period_aliases)
+        st.error(str(exc))
+        return
+    _debug_print(debug_mode, "merged_daily", merged_daily, period_aliases=debug_period_aliases)
+    _debug_print(debug_mode, "stripe_frame", stripe_frame, period_aliases=debug_period_aliases)
+
+    try:
+        all_periods_report, merged_report = build_period_report_tables(
+            periods=periods_preview,
+            frames_by_period=period_frames,
+            period_baselines=period_baselines,
+            report_start=report_start,
+            report_end=analysis_end,
+            baseline_start=report_start,
+            baseline_end=analysis_end,
+        )
+    except ValueError as exc:
+        _debug_print(debug_mode, "report_build_error", str(exc), period_aliases=debug_period_aliases)
+        st.error(str(exc))
+        return
+    _debug_print(debug_mode, "all_periods_report", all_periods_report, period_aliases=debug_period_aliases)
+    _debug_print(debug_mode, "merged_report", merged_report, period_aliases=debug_period_aliases)
 
     width_inches = width_px / png_dpi
     height_inches = height_px / png_dpi
@@ -445,7 +438,7 @@ def main() -> None:
     pdf_bytes = export_figure_bytes(figure, "pdf", png_dpi)
 
     st.subheader("Preview")
-    st.image(png_bytes, use_container_width=True)
+    st.image(png_bytes, width="stretch")
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Stripes shown", int(len(stripe_frame)))
@@ -490,7 +483,9 @@ def main() -> None:
     st.caption("Exports work well in email signatures, presentation decks, reports, posters, and profile pages.")
     st.caption(GENERATED_GRAPHICS_CC0_NOTICE)
 
-    details_tab, yearly_tab = st.tabs(("Periods", "Stripe values"))
+    details_tab, report_tab, merged_tab, yearly_tab = st.tabs(
+        ("Periods", "All period series", "Merged series", "Stripe values")
+    )
     with details_tab:
         st.dataframe(
             pd.DataFrame(
@@ -506,7 +501,32 @@ def main() -> None:
                     for period in periods_preview
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
+            hide_index=True,
+        )
+    with report_tab:
+        st.caption(
+            "Each entered period keeps its own monthly temperature, long-term mean, and "
+            "anomaly columns, even when two periods point to the same place."
+        )
+        if aggregation_mode == "rolling_365_day":
+            st.caption(
+                "These reports stay monthly. The 365-day moving average only affects the "
+                "stripe preview above."
+            )
+        st.dataframe(
+            _format_all_periods_report(all_periods_report),
+            width="stretch",
+            hide_index=True,
+        )
+    with merged_tab:
+        st.caption(
+            "This merged monthly view reads back only the active period schedule. Months "
+            "split across moves are overlap-weighted."
+        )
+        st.dataframe(
+            _format_merged_report(merged_report),
+            width="stretch",
             hide_index=True,
         )
     with yearly_tab:
@@ -520,10 +540,30 @@ def main() -> None:
         yearly_display["anomaly_c"] = yearly_display["anomaly_c"].round(2)
         yearly_display["days_covered"] = yearly_display["days_covered"].round(0).astype(int)
         yearly_display["months_covered"] = yearly_display["months_covered"].round(0).astype(int)
-        st.dataframe(yearly_display, use_container_width=True, hide_index=True)
+        st.dataframe(yearly_display, width="stretch", hide_index=True)
 
     # Free the figure after export.
     plt.close(figure)
+
+
+def _format_all_periods_report(report: pd.DataFrame) -> pd.DataFrame:
+    display = report.copy()
+    display["sample_date"] = display["sample_date"].astype(str)
+    display = display.drop(columns=["timestamp"])
+    for column in display.columns:
+        if column.endswith("_c"):
+            display[column] = pd.to_numeric(display[column], errors="coerce").round(2)
+    return display
+
+
+def _format_merged_report(report: pd.DataFrame) -> pd.DataFrame:
+    display = report.copy()
+    display["sample_date"] = display["sample_date"].astype(str)
+    display = display.drop(columns=["timestamp"])
+    for column in ("temperature_c", "longterm_mean_c", "anomaly_c"):
+        display[column] = pd.to_numeric(display[column], errors="coerce").round(2)
+    display["days_covered"] = pd.to_numeric(display["days_covered"], errors="coerce").round(0).astype(int)
+    return display
 
 
 def _initialize_state(analysis_end: date) -> None:
@@ -531,6 +571,8 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.period_entries = [_blank_entry()]
     if "birth_date" not in st.session_state:
         st.session_state.birth_date = min(date(1990, 1, 1), analysis_end)
+    if "debug_mode" not in st.session_state:
+        st.session_state.debug_mode = False
     local_config = load_local_cds_config()
     if "local_cds_url" not in st.session_state:
         st.session_state.local_cds_url = local_config.url if local_config else DEFAULT_CDSAPI_URL
@@ -769,29 +811,6 @@ def _boundary_mode_caption(entry: dict[str, object]) -> str:
     return "Boundary mode needs a geocoder result with an area boundary or area extent."
 
 
-def _resolve_location_reference_period(
-    reference_mode: str,
-    analysis_start: date,
-    analysis_end: date,
-    custom_start: date | None,
-    custom_end: date | None,
-) -> tuple[date, date, str]:
-    if reference_mode == "1961-2010 climate normal":
-        return date(1961, 1, 1), date(2010, 12, 31), "1961-2010"
-
-    if reference_mode == "Lifetime period":
-        return analysis_start, analysis_end, "Lifetime"
-
-    if reference_mode == "Custom":
-        if custom_start is None or custom_end is None:
-            raise ValueError("A custom reference period needs both a start and an end date.")
-        if custom_start > custom_end:
-            raise ValueError("The custom reference period start date must be on or before the end date.")
-        return custom_start, custom_end, "Custom"
-
-    raise ValueError(f"Unsupported reference period mode: {reference_mode}")
-
-
 def _aggregation_mode_caption(
     baseline_label: str,
     aggregation_mode: str,
@@ -814,6 +833,116 @@ def _aggregation_mode_caption(
         f"Baseline mode: {baseline_label}. Stripe period: full calendar years only, so "
         "partial birth and current years are omitted."
     )
+
+
+def _debug_print(
+    enabled: bool,
+    label: str,
+    payload: object | None = None,
+    *,
+    period_aliases: dict[str, str] | None = None,
+) -> None:
+    if not enabled:
+        return
+
+    print(f"[mystripes debug] {label}", flush=True)
+    if payload is None:
+        return
+
+    if isinstance(payload, pd.DataFrame):
+        print(_format_debug_frame(payload, period_aliases=period_aliases), flush=True)
+        return
+
+    if isinstance(payload, list) and payload and all(isinstance(item, pd.DataFrame) for item in payload):
+        for index, frame in enumerate(payload, start=1):
+            print(f"[mystripes debug] frame {index}", flush=True)
+            print(_format_debug_frame(frame, period_aliases=period_aliases), flush=True)
+        return
+
+    print(pformat(_apply_period_aliases(payload, period_aliases), sort_dicts=False), flush=True)
+
+
+def _format_debug_frame(
+    frame: pd.DataFrame,
+    max_rows: int = 24,
+    *,
+    period_aliases: dict[str, str] | None = None,
+) -> str:
+    display = frame.copy()
+    if period_aliases:
+        display = display.rename(columns=lambda column: _apply_period_aliases_to_text(str(column), period_aliases))
+        for column in display.columns:
+            if pd.api.types.is_object_dtype(display[column]) or pd.api.types.is_string_dtype(display[column]):
+                display[column] = display[column].map(
+                    lambda value: _apply_period_aliases_to_text(value, period_aliases)
+                    if pd.notna(value)
+                    else value
+                )
+
+    summary = f"shape={display.shape} columns={list(display.columns)}"
+    if frame.empty:
+        return summary + "\n<empty>"
+
+    if len(display) <= max_rows:
+        return summary + "\n" + display.to_string(index=False)
+
+    head_rows = max_rows // 2
+    tail_rows = max_rows - head_rows
+    return (
+        summary
+        + "\n"
+        + display.head(head_rows).to_string(index=False)
+        + "\n...\n"
+        + display.tail(tail_rows).to_string(index=False)
+    )
+
+
+def _build_debug_period_aliases(periods) -> dict[str, str]:
+    return {
+        f"Period {index + 1}: {period.label}": f"P{index + 1}"
+        for index, period in enumerate(periods)
+    }
+
+
+def _build_debug_period_identifications(periods) -> dict[str, str]:
+    return {
+        f"P{index + 1}": _debug_period_identifier(period)
+        for index, period in enumerate(periods)
+    }
+
+
+def _debug_period_identifier(period, max_length: int = 72) -> str:
+    identifier = period.label or period.display_name
+    if period.display_name and period.display_name != identifier:
+        identifier = f"{identifier} | {period.display_name}"
+    if len(identifier) <= max_length:
+        return identifier
+    return identifier[: max_length - 3] + "..."
+
+
+def _apply_period_aliases(payload: object, period_aliases: dict[str, str] | None) -> object:
+    if not period_aliases:
+        return payload
+    if isinstance(payload, str):
+        return _apply_period_aliases_to_text(payload, period_aliases)
+    if isinstance(payload, list):
+        return [_apply_period_aliases(item, period_aliases) for item in payload]
+    if isinstance(payload, tuple):
+        return tuple(_apply_period_aliases(item, period_aliases) for item in payload)
+    if isinstance(payload, dict):
+        return {
+            _apply_period_aliases_to_text(key, period_aliases) if isinstance(key, str) else key:
+            _apply_period_aliases(value, period_aliases)
+            for key, value in payload.items()
+        }
+    return payload
+
+
+def _apply_period_aliases_to_text(value: object, period_aliases: dict[str, str]) -> str:
+    text = str(value)
+    for long_name, short_name in period_aliases.items():
+        text = text.replace(long_name, short_name)
+    return text
 
 
 if __name__ == "__main__":

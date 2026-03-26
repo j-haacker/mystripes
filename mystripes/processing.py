@@ -76,112 +76,126 @@ def build_periods_from_entries(
     return periods, errors
 
 
-def combine_period_frames(
+def calculate_series_mean_temperature(frame: pd.DataFrame) -> float:
+    if "sample_days" in frame.columns and frame["sample_days"].sum() > 0:
+        weighted_sum = (frame["temperature_c"] * frame["sample_days"]).sum()
+        return float(weighted_sum / frame["sample_days"].sum())
+    return float(frame["temperature_c"].mean())
+
+def build_period_report_tables(
     periods: list[LifePeriod],
     frames_by_period: list[pd.DataFrame],
-    aggregation_mode: str = "full_calendar_years",
-    rolling_window_end: date | None = None,
-    rolling_crop_start: date | None = None,
-    rolling_sample_mode: str = "monthly",
-    rolling_strip_count: int | None = None,
+    period_baselines: list[float] | None,
+    report_start: date,
+    report_end: date,
+    baseline_start: date | None = None,
+    baseline_end: date | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    combined_frames: list[pd.DataFrame] = []
-    effective_rolling_crop_start = rolling_crop_start or min(period.start_date for period in periods)
+    daily_temperature, daily_baseline, daily_anomaly = _build_period_daily_tables(
+        periods=periods,
+        frames_by_period=frames_by_period,
+        report_start=report_start,
+        report_end=report_end,
+        period_baselines=period_baselines,
+        baseline_start=baseline_start,
+        baseline_end=baseline_end,
+    )
+    full_report = _build_full_period_report(
+        daily_temperature=daily_temperature,
+        daily_baseline=daily_baseline,
+        daily_anomaly=daily_anomaly,
+    )
 
-    for index, (period, frame) in enumerate(zip(periods, frames_by_period, strict=True)):
-        effective_period_start = period.start_date
-        if aggregation_mode == "rolling_365_day" and index == 0:
-            effective_period_start = period.start_date - timedelta(days=364)
+    merged_daily = _assemble_merged_daily_series(
+        periods=periods,
+        daily_temperature=daily_temperature,
+        daily_baseline=daily_baseline,
+        daily_anomaly=daily_anomaly,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=0,
+    )
 
-        local_frame = frame.copy()
-        local_frame["sample_start_date"] = local_frame["timestamp"].dt.date.map(_sample_start_date)
-        local_frame["sample_end_date"] = local_frame["timestamp"].dt.date.map(_sample_end_date)
-        local_frame["covered_start_date"] = local_frame["sample_start_date"].map(
-            lambda sample_start: max(effective_period_start, sample_start)
+    merged = (
+        merged_daily.assign(
+            timestamp=merged_daily["daily_date"].dt.to_period("M").dt.to_timestamp()
         )
-        local_frame["covered_end_date"] = local_frame["sample_end_date"].map(
-            lambda sample_end: min(period.end_date, sample_end)
+        .groupby("timestamp", as_index=False)
+        .agg(
+            temperature_c=("temperature_c", "mean"),
+            longterm_mean_c=("longterm_mean_c", "mean"),
+            anomaly_c=("anomaly_c", "mean"),
+            days_covered=("daily_date", "size"),
+            current_period=("current_period", _join_unique_values),
+            current_place=("current_place", _join_unique_values),
         )
-        local_frame["overlap_days"] = local_frame.apply(
-            lambda row: _overlap_days(
-                effective_period_start,
-                period.end_date,
-                row["sample_start_date"],
-                row["sample_end_date"],
-            ),
-            axis=1,
-        )
-        local_frame = local_frame.loc[local_frame["overlap_days"] > 0].copy()
-        local_frame["period_label"] = period.label
-        local_frame["place_name"] = period.display_name
-        local_frame["location_key"] = period.location_key
-        local_frame["weighted_temp_sum"] = local_frame["temperature_c"] * local_frame["overlap_days"]
-        combined_frames.append(local_frame)
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    merged["sample_date"] = merged["timestamp"].dt.date
+    merged = merged[
+        [
+            "timestamp",
+            "sample_date",
+            "current_period",
+            "current_place",
+            "temperature_c",
+            "longterm_mean_c",
+            "anomaly_c",
+            "days_covered",
+        ]
+    ]
 
-    if not combined_frames:
-        raise ValueError("No monthly data was available for the selected periods.")
-
-    combined = pd.concat(combined_frames, ignore_index=True).sort_values("timestamp")
-    if aggregation_mode == "full_calendar_years":
-        yearly = _aggregate_full_calendar_years(combined)
-    elif aggregation_mode == "rolling_365_day":
-        effective_window_end = rolling_window_end or max(period.end_date for period in periods)
-        yearly = _aggregate_rolling_365_day_windows(
-            combined,
-            effective_window_end,
-            rolling_crop_start=effective_rolling_crop_start,
-            rolling_sample_mode=rolling_sample_mode,
-            rolling_strip_count=rolling_strip_count,
-        )
-    else:
-        raise ValueError(f"Unsupported aggregation mode: {aggregation_mode}")
-
-    return combined, yearly
+    return full_report, merged
 
 
-def build_stripe_frame(yearly: pd.DataFrame, baseline_c: float) -> pd.DataFrame:
-    stripe_frame = yearly.copy()
-    stripe_frame["baseline_c"] = baseline_c
-    stripe_frame["anomaly_c"] = stripe_frame["mean_temp_c"] - baseline_c
-    return stripe_frame
+def build_merged_daily_series(
+    periods: list[LifePeriod],
+    frames_by_period: list[pd.DataFrame],
+    report_start: date,
+    report_end: date,
+    period_baselines: list[float] | None = None,
+    baseline_start: date | None = None,
+    baseline_end: date | None = None,
+    first_period_history_days: int = 0,
+) -> pd.DataFrame:
+    daily_temperature, daily_baseline, daily_anomaly = _build_period_daily_tables(
+        periods=periods,
+        frames_by_period=frames_by_period,
+        report_start=report_start,
+        report_end=report_end,
+        period_baselines=period_baselines,
+        baseline_start=baseline_start,
+        baseline_end=baseline_end,
+    )
+    return _assemble_merged_daily_series(
+        periods=periods,
+        daily_temperature=daily_temperature,
+        daily_baseline=daily_baseline,
+        daily_anomaly=daily_anomaly,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
 
 
-def build_location_baseline_stripe_frame(
-    combined: pd.DataFrame,
-    baseline_by_location: dict[str, float],
+def aggregate_daily_series_to_stripes(
+    daily_series: pd.DataFrame,
     aggregation_mode: str = "full_calendar_years",
     rolling_window_end: date | None = None,
     rolling_crop_start: date | None = None,
     rolling_sample_mode: str = "monthly",
     rolling_strip_count: int | None = None,
 ) -> pd.DataFrame:
-    stripe_source = combined.copy()
-    stripe_source["baseline_c"] = stripe_source["location_key"].map(baseline_by_location)
-
-    missing_locations = sorted(
-        {
-            str(location_key)
-            for location_key in stripe_source.loc[stripe_source["baseline_c"].isna(), "location_key"].unique()
-        }
-    )
-    if missing_locations:
-        raise ValueError(
-            "Missing location baselines for: " + ", ".join(missing_locations)
-        )
-
-    stripe_source["weighted_baseline_sum"] = stripe_source["baseline_c"] * stripe_source["overlap_days"]
-    stripe_source["weighted_anomaly_sum"] = (
-        (stripe_source["temperature_c"] - stripe_source["baseline_c"]) * stripe_source["overlap_days"]
-    )
-
     if aggregation_mode == "full_calendar_years":
-        return _aggregate_full_calendar_years_with_location_baseline(stripe_source)
+        return new_yearly(daily_series)
     if aggregation_mode == "rolling_365_day":
-        effective_window_end = rolling_window_end or max(stripe_source["covered_end_date"])
-        return _aggregate_rolling_365_day_windows_with_location_baseline(
-            stripe_source,
-            effective_window_end,
-            rolling_crop_start=rolling_crop_start or min(stripe_source["covered_start_date"]),
+        effective_window_end = rolling_window_end or max(daily_series["sample_date"])
+        effective_crop_start = rolling_crop_start or min(daily_series["sample_date"])
+        return _aggregate_rolling_daily_series_from_daily(
+            daily_series=daily_series,
+            rolling_window_end=effective_window_end,
+            rolling_crop_start=effective_crop_start,
             rolling_sample_mode=rolling_sample_mode,
             rolling_strip_count=rolling_strip_count,
         )
@@ -189,32 +203,175 @@ def build_location_baseline_stripe_frame(
     raise ValueError(f"Unsupported aggregation mode: {aggregation_mode}")
 
 
-def calculate_life_period_baseline(yearly: pd.DataFrame) -> float:
-    if "days_covered" in yearly.columns and yearly["days_covered"].sum() > 0:
-        weighted_sum = (yearly["mean_temp_c"] * yearly["days_covered"]).sum()
-        return float(weighted_sum / yearly["days_covered"].sum())
-    return float(yearly["mean_temp_c"].mean())
-
-
-def calculate_series_mean_temperature(frame: pd.DataFrame) -> float:
-    if "sample_days" in frame.columns and frame["sample_days"].sum() > 0:
-        weighted_sum = (frame["temperature_c"] * frame["sample_days"]).sum()
-        return float(weighted_sum / frame["sample_days"].sum())
-    return float(frame["temperature_c"].mean())
-
-
-def calculate_weighted_location_baseline(
+def _build_period_daily_tables(
     periods: list[LifePeriod],
-    baseline_by_location: dict[str, float],
-) -> float:
-    total_days = sum(period.days for period in periods)
-    if total_days <= 0:
-        raise ValueError("At least one day of coverage is required.")
+    frames_by_period: list[pd.DataFrame],
+    report_start: date,
+    report_end: date,
+    period_baselines: list[float] | None = None,
+    baseline_start: date | None = None,
+    baseline_end: date | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if len(frames_by_period) != len(periods):
+        raise ValueError("Each period needs a matching temperature frame.")
+    if period_baselines is not None and len(period_baselines) != len(periods):
+        raise ValueError("Each period needs a matching baseline value.")
 
-    weighted_sum = 0.0
-    for period in periods:
-        weighted_sum += baseline_by_location[period.location_key] * period.days
-    return weighted_sum / total_days
+    effective_baseline_start = baseline_start or report_start
+    effective_baseline_end = baseline_end or report_end
+    if effective_baseline_end < effective_baseline_start:
+        raise ValueError("The baseline date range must not end before it starts.")
+
+    daily_temperature = _build_daily_temperature_table(
+        periods=periods,
+        frames_by_period=frames_by_period,
+        report_start=report_start,
+        report_end=report_end,
+    )
+    daily_baseline = _build_daily_baseline_table(
+        daily_temperature=daily_temperature,
+        period_baselines=period_baselines,
+        baseline_start=effective_baseline_start,
+        baseline_end=effective_baseline_end,
+    )
+    daily_anomaly = _build_daily_anomaly_table(
+        daily_temperature=daily_temperature,
+        daily_baseline=daily_baseline,
+    )
+    return daily_temperature, daily_baseline, daily_anomaly
+
+
+def _build_daily_temperature_table(
+    periods: list[LifePeriod],
+    frames_by_period: list[pd.DataFrame],
+    report_start: date,
+    report_end: date,
+) -> pd.DataFrame:
+    monthly_table = _build_monthly_temperature_table(
+        periods=periods,
+        frames_by_period=frames_by_period,
+        report_start=report_start,
+        report_end=report_end,
+    )
+    daily_index = pd.date_range(start=report_start, end=report_end, freq="D")
+    naive_monthly = monthly_table.copy()
+    if isinstance(naive_monthly.index, pd.DatetimeIndex) and naive_monthly.index.tz is not None:
+        naive_monthly.index = naive_monthly.index.tz_localize(None)
+    return naive_monthly.reindex(daily_index, method="ffill")
+
+
+def _build_monthly_temperature_table(
+    periods: list[LifePeriod],
+    frames_by_period: list[pd.DataFrame],
+    report_start: date,
+    report_end: date,
+) -> pd.DataFrame:
+    report_index = pd.date_range(
+        start=_sample_start_date(report_start),
+        end=_sample_start_date(report_end),
+        freq="MS",
+        tz="UTC",
+    )
+    temperature_table = pd.DataFrame(index=report_index)
+    for index, (period, frame) in enumerate(zip(periods, frames_by_period, strict=True)):
+        period_key = _period_report_key(index, period)
+        aligned = frame.drop_duplicates("timestamp").set_index("timestamp").reindex(report_index)
+        temperature_table[period_key] = pd.to_numeric(aligned["temperature_c"], errors="coerce")
+    return temperature_table
+
+
+def _build_daily_baseline_table(
+    daily_temperature: pd.DataFrame,
+    period_baselines: list[float] | None,
+    baseline_start: date,
+    baseline_end: date,
+) -> pd.DataFrame:
+    baseline_index = pd.date_range(start=baseline_start, end=baseline_end, freq="D")
+    baseline_reference = daily_temperature.reindex(baseline_index)
+
+    daily_baseline = pd.DataFrame(index=daily_temperature.index)
+    if period_baselines is not None:
+        if len(period_baselines) != len(daily_temperature.columns):
+            raise ValueError("Each period needs a matching baseline value.")
+        for index, column in enumerate(daily_temperature.columns):
+            daily_baseline[column] = float(period_baselines[index])
+        return daily_baseline
+
+    for column in daily_temperature.columns:
+        daily_baseline[column] = new_baseline(
+            daily_temperature[column],
+            reference=baseline_reference[column],
+        )
+    return daily_baseline
+
+
+def _build_daily_anomaly_table(
+    daily_temperature: pd.DataFrame,
+    daily_baseline: pd.DataFrame,
+) -> pd.DataFrame:
+    daily_anomaly = pd.DataFrame(index=daily_temperature.index)
+    for column in daily_temperature.columns:
+        daily_anomaly[column] = new_anomaly(
+            daily_temperature[column],
+            daily_baseline[column],
+        )
+    return daily_anomaly
+
+
+def _assemble_merged_daily_series(
+    periods: list[LifePeriod],
+    daily_temperature: pd.DataFrame,
+    daily_baseline: pd.DataFrame,
+    daily_anomaly: pd.DataFrame,
+    report_start: date,
+    report_end: date,
+    first_period_history_days: int,
+) -> pd.DataFrame:
+    active_period, active_place = _build_active_metadata(
+        periods=periods,
+        daily_temperature=daily_temperature,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+    merged = pd.DataFrame(index=daily_temperature.index)
+    merged["current_period"] = active_period
+    merged["current_place"] = active_place
+    merged["temperature_c"] = new_merge(
+        daily_temperature,
+        periods,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+    merged["longterm_mean_c"] = new_merge(
+        daily_baseline,
+        periods,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+    merged["anomaly_c"] = new_merge(
+        daily_anomaly,
+        periods,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+
+    merged = merged.reset_index(names="daily_date")
+    merged["sample_date"] = merged["daily_date"].dt.date
+    return merged[
+        [
+            "daily_date",
+            "sample_date",
+            "current_period",
+            "current_place",
+            "temperature_c",
+            "longterm_mean_c",
+            "anomaly_c",
+        ]
+    ]
 
 
 def unique_locations(periods: list[LifePeriod]) -> dict[str, tuple[float, float]]:
@@ -244,140 +401,19 @@ def _parse_coordinates(entry: dict[str, Any], index: int) -> tuple[float, float,
     return latitude, longitude, None
 
 
-def _period_mask(
-    timestamps: pd.Series,
-    start_date: date,
-    end_date: date,
-) -> pd.Series:
-    dates = timestamps.dt.date
-    return (dates >= start_date) & (dates <= end_date)
-
-
 def _sample_start_date(sample_date: date) -> date:
     return sample_date.replace(day=1)
 
-
-def _sample_end_date(sample_date: date) -> date:
-    last_day = calendar.monthrange(sample_date.year, sample_date.month)[1]
-    return sample_date.replace(day=last_day)
-
-
-def _aggregate_full_calendar_years(combined: pd.DataFrame) -> pd.DataFrame:
-    combined = combined.copy()
-    combined["year"] = combined["timestamp"].dt.year
-
-    yearly = (
-        combined.groupby("year", as_index=False)
-        .agg(
-            weighted_temp_sum=("weighted_temp_sum", "sum"),
-            days_covered=("overlap_days", "sum"),
-            months_covered=("timestamp", "size"),
-        )
-        .sort_values("year")
-        .reset_index(drop=True)
-    )
-    yearly["window_start"] = yearly["year"].map(lambda year: date(year, 1, 1))
-    yearly["window_end"] = yearly["year"].map(lambda year: date(year, 12, 31))
-    yearly["sample_date"] = yearly["window_end"]
-    yearly["expected_days"] = yearly["year"].map(_days_in_year)
-    yearly = yearly.loc[yearly["days_covered"] == yearly["expected_days"]].copy()
-    if yearly.empty:
-        raise ValueError(
-            "No complete calendar years are available for the selected period. "
-            "Try the 365-day moving-average mode instead."
-        )
-    yearly["mean_temp_c"] = yearly["weighted_temp_sum"] / yearly["days_covered"]
-    return yearly[["year", "sample_date", "window_start", "window_end", "mean_temp_c", "days_covered", "months_covered"]]
-
-
-def _aggregate_full_calendar_years_with_location_baseline(combined: pd.DataFrame) -> pd.DataFrame:
-    combined = combined.copy()
-    combined["year"] = combined["timestamp"].dt.year
-
-    yearly = (
-        combined.groupby("year", as_index=False)
-        .agg(
-            weighted_temp_sum=("weighted_temp_sum", "sum"),
-            weighted_baseline_sum=("weighted_baseline_sum", "sum"),
-            weighted_anomaly_sum=("weighted_anomaly_sum", "sum"),
-            days_covered=("overlap_days", "sum"),
-            months_covered=("timestamp", "size"),
-        )
-        .sort_values("year")
-        .reset_index(drop=True)
-    )
-    yearly["window_start"] = yearly["year"].map(lambda year: date(year, 1, 1))
-    yearly["window_end"] = yearly["year"].map(lambda year: date(year, 12, 31))
-    yearly["sample_date"] = yearly["window_end"]
-    yearly["expected_days"] = yearly["year"].map(_days_in_year)
-    yearly = yearly.loc[yearly["days_covered"] == yearly["expected_days"]].copy()
-    if yearly.empty:
-        raise ValueError(
-            "No complete calendar years are available for the selected period. "
-            "Try the 365-day moving-average mode instead."
-        )
-    yearly["mean_temp_c"] = yearly["weighted_temp_sum"] / yearly["days_covered"]
-    yearly["baseline_c"] = yearly["weighted_baseline_sum"] / yearly["days_covered"]
-    yearly["anomaly_c"] = yearly["weighted_anomaly_sum"] / yearly["days_covered"]
-    return yearly[
-        [
-            "year",
-            "sample_date",
-            "window_start",
-            "window_end",
-            "mean_temp_c",
-            "baseline_c",
-            "anomaly_c",
-            "days_covered",
-            "months_covered",
-        ]
-    ]
-
-
-def _aggregate_rolling_365_day_windows(
-    combined: pd.DataFrame,
-    rolling_window_end: date,
-    rolling_crop_start: date,
-    rolling_sample_mode: str = "monthly",
-    rolling_strip_count: int | None = None,
-) -> pd.DataFrame:
-    return _aggregate_rolling_daily_series(
-        combined,
-        rolling_window_end,
-        rolling_crop_start=rolling_crop_start,
-        rolling_sample_mode=rolling_sample_mode,
-        rolling_strip_count=rolling_strip_count,
-        include_location_baseline=False,
-    )
-
-
-def _aggregate_rolling_365_day_windows_with_location_baseline(
-    combined: pd.DataFrame,
-    rolling_window_end: date,
-    rolling_crop_start: date,
-    rolling_sample_mode: str = "monthly",
-    rolling_strip_count: int | None = None,
-) -> pd.DataFrame:
-    return _aggregate_rolling_daily_series(
-        combined,
-        rolling_window_end,
-        rolling_crop_start=rolling_crop_start,
-        rolling_sample_mode=rolling_sample_mode,
-        rolling_strip_count=rolling_strip_count,
-        include_location_baseline=True,
-    )
-
-
-def _aggregate_rolling_daily_series(
-    combined: pd.DataFrame,
+def _aggregate_rolling_daily_series_from_daily(
+    daily_series: pd.DataFrame,
     rolling_window_end: date,
     rolling_crop_start: date,
     rolling_sample_mode: str,
     rolling_strip_count: int | None,
-    include_location_baseline: bool,
 ) -> pd.DataFrame:
-    coverage_start = min(combined["covered_start_date"])
-    coverage_end = max(combined["covered_end_date"])
+    daily = daily_series.copy().sort_values("daily_date").reset_index(drop=True)
+    coverage_start = min(daily["sample_date"])
+    coverage_end = max(daily["sample_date"])
     effective_window_end = min(rolling_window_end, coverage_end)
     earliest_complete_end = coverage_start + timedelta(days=364)
 
@@ -387,10 +423,7 @@ def _aggregate_rolling_daily_series(
             "Try a longer date range or use full calendar years."
         )
 
-    daily = _expand_combined_to_daily_frame(combined, include_location_baseline=include_location_baseline)
-    daily = daily.loc[daily["daily_date"] <= pd.Timestamp(effective_window_end)].copy()
-    daily = daily.sort_values("daily_date").reset_index(drop=True)
-
+    daily = daily.loc[daily["sample_date"] <= effective_window_end].copy()
     if len(daily) < 365:
         raise ValueError(
             "No complete 365-day window is available for the selected period. "
@@ -398,12 +431,11 @@ def _aggregate_rolling_daily_series(
         )
 
     daily["mean_temp_c"] = daily["temperature_c"].rolling(window=365, min_periods=365).mean()
-    if include_location_baseline:
-        daily["baseline_c"] = daily["baseline_c"].rolling(window=365, min_periods=365).mean()
-        daily["anomaly_c"] = daily["mean_temp_c"] - daily["baseline_c"]
+    daily["baseline_c"] = daily["longterm_mean_c"].rolling(window=365, min_periods=365).mean()
+    daily["anomaly_c"] = daily["anomaly_c"].rolling(window=365, min_periods=365).mean()
 
     valid = daily.loc[daily["mean_temp_c"].notna()].copy()
-    valid = valid.loc[valid["daily_date"].dt.date >= rolling_crop_start].copy()
+    valid = valid.loc[valid["sample_date"] >= rolling_crop_start].copy()
     sampled = _sample_rolling_daily_frame(
         valid,
         rolling_sample_mode=rolling_sample_mode,
@@ -419,46 +451,204 @@ def _aggregate_rolling_daily_series(
         axis=1,
     )
 
-    if include_location_baseline:
-        return sampled[
-            [
-                "year",
-                "sample_date",
-                "window_start",
-                "window_end",
-                "mean_temp_c",
-                "baseline_c",
-                "anomaly_c",
-                "days_covered",
-                "months_covered",
-            ]
-        ].reset_index(drop=True)
-
-    return sampled[
-        ["year", "sample_date", "window_start", "window_end", "mean_temp_c", "days_covered", "months_covered"]
-    ].reset_index(drop=True)
+    columns = ["year", "sample_date", "window_start", "window_end", "mean_temp_c"]
+    if "baseline_c" in sampled.columns:
+        columns.append("baseline_c")
+    if "anomaly_c" in sampled.columns:
+        columns.append("anomaly_c")
+    columns.extend(["days_covered", "months_covered"])
+    return sampled[columns].reset_index(drop=True)
 
 
-def _expand_combined_to_daily_frame(
-    combined: pd.DataFrame,
-    include_location_baseline: bool,
+def new_baseline(
+    data: pd.Series,
+    reference: pd.Series | None = None,
+) -> pd.Series:
+    return _new_baseline_default(data, reference=reference)
+
+
+def new_anomaly(data, baseline):
+    temperature = pd.to_numeric(data, errors="coerce")
+    reference = pd.to_numeric(baseline, errors="coerce")
+    return (temperature - reference).astype("float64")
+
+
+def new_merge(
+    anom_df: pd.DataFrame,
+    periods: list[LifePeriod],
+    report_start: date,
+    report_end: date,
+    first_period_history_days: int = 0,
+) -> pd.Series:
+    active_ranges, required_start = _active_ranges(
+        periods=periods,
+        daily_temperature=anom_df,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+    merged = pd.Series(index=anom_df.index, dtype="float64")
+    for _, period_key, active_days in active_ranges:
+        if merged.loc[active_days].notna().any():
+            raise ValueError("The configured periods overlap in the selected timeline.")
+        values = pd.to_numeric(anom_df.loc[active_days, period_key], errors="coerce")
+        if values.isna().any():
+            raise ValueError(f"Missing values for {period_key} in the selected timeline.")
+        merged.loc[active_days] = values.to_numpy()
+    if merged.loc[pd.Timestamp(required_start):].isna().any():
+        raise ValueError("The configured periods do not cover every day in the selected timeline.")
+    return merged.astype("float64")
+
+
+def new_yearly(merged: pd.DataFrame) -> pd.DataFrame:
+    daily = merged.copy()
+    daily["year"] = daily["daily_date"].dt.year
+
+    yearly = (
+        daily.groupby("year", as_index=False)
+        .agg(
+            mean_temp_c=("temperature_c", "mean"),
+            baseline_c=("longterm_mean_c", "mean"),
+            anomaly_c=("anomaly_c", "mean"),
+            days_covered=("daily_date", "size"),
+        )
+        .sort_values("year")
+        .reset_index(drop=True)
+    )
+    yearly["window_start"] = yearly["year"].map(lambda year: date(year, 1, 1))
+    yearly["window_end"] = yearly["year"].map(lambda year: date(year, 12, 31))
+    yearly["sample_date"] = yearly["window_end"]
+    yearly["months_covered"] = 12
+    yearly["expected_days"] = yearly["year"].map(_days_in_year)
+    yearly = yearly.loc[yearly["days_covered"] == yearly["expected_days"]].copy()
+    if yearly.empty:
+        raise ValueError(
+            "No complete calendar years are available for the selected period. "
+            "Try the 365-day moving-average mode instead."
+        )
+
+    return yearly[
+        [
+            "year",
+            "sample_date",
+            "window_start",
+            "window_end",
+            "mean_temp_c",
+            "baseline_c",
+            "anomaly_c",
+            "days_covered",
+            "months_covered",
+        ]
+    ]
+
+
+def _new_baseline_default(
+    data: pd.Series,
+    reference: pd.Series | None = None,
+) -> pd.Series:
+    # This is the single place to change how non-location-specific baselines are computed.
+    source = pd.to_numeric(reference if reference is not None else data, errors="coerce").dropna()
+    if source.empty:
+        name = data.name or "period"
+        raise ValueError(f"Missing baseline temperatures for: {name}")
+
+    doy_index = data.index.dayofyear
+    doy_means = data.groupby(doy_index).mean()
+    baseline_value = doy_means.loc[doy_index]
+    baseline_value.index = data.index
+    return pd.Series(baseline_value, index=data.index, dtype="float64")
+
+
+def _build_full_period_report(
+    daily_temperature: pd.DataFrame,
+    daily_baseline: pd.DataFrame,
+    daily_anomaly: pd.DataFrame,
 ) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for row in combined.itertuples(index=False):
-        days = pd.date_range(start=row.covered_start_date, end=row.covered_end_date, freq="D")
-        payload: dict[str, object] = {
-            "daily_date": days,
-            "temperature_c": [float(row.temperature_c)] * len(days),
-        }
-        if include_location_baseline:
-            payload["baseline_c"] = [float(row.baseline_c)] * len(days)
-        frames.append(pd.DataFrame(payload))
+    monthly_temperature = daily_temperature.resample("MS").mean()
+    monthly_baseline = daily_baseline.resample("MS").mean()
+    monthly_anomaly = daily_anomaly.resample("MS").mean()
 
-    if not frames:
-        return pd.DataFrame(columns=["daily_date", "temperature_c", "baseline_c"])
+    full_report = pd.DataFrame({"timestamp": monthly_temperature.index})
+    full_report["sample_date"] = full_report["timestamp"].dt.date
+    for period_key in monthly_temperature.columns:
+        full_report[f"{period_key} temperature_c"] = monthly_temperature[period_key].to_numpy()
+        full_report[f"{period_key} longterm_mean_c"] = monthly_baseline[period_key].to_numpy()
+        full_report[f"{period_key} anomaly_c"] = monthly_anomaly[period_key].to_numpy()
+    return full_report
 
-    daily = pd.concat(frames, ignore_index=True).sort_values("daily_date").drop_duplicates("daily_date")
-    return daily.reset_index(drop=True)
+
+def _build_active_metadata(
+    periods: list[LifePeriod],
+    daily_temperature: pd.DataFrame,
+    report_start: date,
+    report_end: date,
+    first_period_history_days: int,
+) -> tuple[pd.Series, pd.Series]:
+    active_ranges, required_start = _active_ranges(
+        periods=periods,
+        daily_temperature=daily_temperature,
+        report_start=report_start,
+        report_end=report_end,
+        first_period_history_days=first_period_history_days,
+    )
+    current_period = pd.Series(index=daily_temperature.index, dtype="string")
+    current_place = pd.Series(index=daily_temperature.index, dtype="string")
+
+    for period, period_key, active_days in active_ranges:
+        if current_period.loc[active_days].notna().any():
+            raise ValueError("The configured periods overlap in the selected timeline.")
+        current_period.loc[active_days] = period_key
+        current_place.loc[active_days] = period.display_name
+
+    required_slice = slice(pd.Timestamp(required_start), None)
+    if current_period.loc[required_slice].isna().any() or current_place.loc[required_slice].isna().any():
+        raise ValueError("The configured periods do not cover every day in the selected timeline.")
+    return current_period, current_place
+
+
+def _active_ranges(
+    periods: list[LifePeriod],
+    daily_temperature: pd.DataFrame,
+    report_start: date,
+    report_end: date,
+    first_period_history_days: int,
+) -> tuple[list[tuple[LifePeriod, str, pd.DatetimeIndex]], date]:
+    active_ranges: list[tuple[LifePeriod, str, pd.DatetimeIndex]] = []
+    required_start_dates: list[date] = []
+
+    for index, period in enumerate(periods):
+        period_key = _period_report_key(index, period)
+        if period_key not in daily_temperature.columns:
+            raise ValueError(f"Missing period column for {period_key}.")
+
+        available = pd.to_numeric(daily_temperature[period_key], errors="coerce").dropna()
+        if available.empty:
+            raise ValueError(f"No temperature values are available for {period_key}.")
+
+        available_start = available.index.min().date()
+        available_end = available.index.max().date()
+        effective_start = _effective_period_start(
+            period=period,
+            index=index,
+            first_period_history_days=first_period_history_days,
+        )
+        active_start = max(report_start, effective_start, available_start)
+        active_end = min(report_end, period.end_date, available_end)
+        if active_start > active_end:
+            continue
+
+        required_start_dates.append(active_start)
+        active_ranges.append(
+            (
+                period,
+                period_key,
+                pd.date_range(start=active_start, end=active_end, freq="D"),
+            )
+        )
+
+    if not required_start_dates:
+        raise ValueError("The configured periods do not cover every day in the selected timeline.")
+    return active_ranges, min(required_start_dates)
 
 
 def _sample_rolling_daily_frame(
@@ -517,17 +707,21 @@ def _months_touched(start_date: date, end_date: date) -> int:
     return len(pd.period_range(start=start_date, end=end_date, freq="M"))
 
 
-def _overlap_days(
-    period_start: date,
-    period_end: date,
-    sample_start: date,
-    sample_end: date,
-) -> int:
-    overlap_start = max(period_start, sample_start)
-    overlap_end = min(period_end, sample_end)
-    if overlap_start > overlap_end:
-        return 0
-    return (overlap_end - overlap_start).days + 1
+def _period_report_key(index: int, period: LifePeriod) -> str:
+    return f"Period {index + 1}: {period.label}"
+
+
+def _effective_period_start(
+    period: LifePeriod,
+    index: int,
+    first_period_history_days: int,
+) -> date:
+    if index == 0 and first_period_history_days > 0:
+        return period.start_date - timedelta(days=first_period_history_days)
+    return period.start_date
+def _join_unique_values(values: pd.Series) -> str:
+    ordered_unique = list(dict.fromkeys(str(value) for value in values if str(value).strip()))
+    return " + ".join(ordered_unique)
 
 
 def _days_in_year(year: int) -> int:

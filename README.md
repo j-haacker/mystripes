@@ -92,6 +92,7 @@ If you use Pixi, this repository includes [pixi.toml](pixi.toml) with ready-to-r
 ```bash
 pixi run start
 pixi run test
+pixi run lock
 ```
 
 ## Deployment
@@ -129,6 +130,12 @@ If you do not normally use uv, a simple one-off approach is:
 python -m pip install uv
 uv lock
 python -m pip uninstall uv
+```
+
+If you use Pixi here, the same refresh is available as:
+
+```bash
+pixi run lock
 ```
 
 Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pipfile`, `environment.yml`, `requirements.txt`, then `pyproject.toml`. So committing `uv.lock` is enough to make the deployment prefer that lockfile over `requirements.txt`.

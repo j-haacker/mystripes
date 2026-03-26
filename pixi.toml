@@ -7,9 +7,11 @@ version = "0.1.0"
 [tasks]
 start = "streamlit run app.py"
 test = "python -m unittest discover -s tests"
+lock = "uv lock"
 
 [dependencies]
 python = "3.12.*"
+uv = ">=0.10,<0.11"
 
 [pypi-dependencies]
 cdsapi = ">=0.7.7,<0.8"

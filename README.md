@@ -24,7 +24,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
 - Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
 - Expands monthly values to daily series before merging periods and aggregating stripe values.
 - Offers full calendar years only as the default stripe period, or a 365-day moving average sampled monthly by default or at an evenly spaced fixed strip count.
-- Uses the latest per-period baseline implementation from the daily period series before merging them into one timeline.
+- Uses a per-location day-of-year climatology built from each location's full downloaded timeline before merging periods into one timeline.
 - Caches identical ERA5-Land download requests locally, so regenerating the same strips reuses prior monthly data instead of calling CDS again.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
 - Includes a small Python API for preparing stripe data and plotting or saving the result.

@@ -322,7 +322,7 @@ def main() -> None:
             "analysis_end": analysis_end.isoformat(),
             "spatial_mode": spatial_mode,
             "radius_km": radius_km,
-            "baseline_mode": "latest_period_baseline",
+            "climatology": "per-location day-of-year from full location timelines",
             "aggregation_mode": aggregation_mode,
             "rolling_sample_mode": rolling_sample_mode,
             "rolling_strip_count": rolling_strip_count,
@@ -347,8 +347,12 @@ def main() -> None:
             report_start = max(birth_date, dataset_window.min_start)
             rolling_crop_start = min(period.start_date for period in periods_preview)
             first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
-            period_frames = [
-                fetch_point_temperature_series(
+            first_location_key = periods_preview[0].location_key
+            unique_periods_by_location = {}
+            for period in periods_preview:
+                unique_periods_by_location.setdefault(period.location_key, period)
+            location_frames = {
+                location_key: fetch_point_temperature_series(
                     config=active_cds_config,
                     latitude=period.latitude,
                     longitude=period.longitude,
@@ -356,7 +360,7 @@ def main() -> None:
                         dataset_window.min_start,
                         report_start - timedelta(days=364),
                     )
-                    if aggregation_mode == "rolling_365_day" and index == 0
+                    if aggregation_mode == "rolling_365_day" and location_key == first_location_key
                     else report_start,
                     end_date=analysis_end,
                     spatial_mode=spatial_mode,
@@ -364,21 +368,21 @@ def main() -> None:
                     boundary_geojson=period.boundary_geojson,
                     boundary_bbox=period.bounding_box,
                 )
-                for index, period in enumerate(periods_preview)
-            ]
+                for location_key, period in unique_periods_by_location.items()
+            }
+            period_frames = [location_frames[period.location_key] for period in periods_preview]
         except (CDSRequestError, ValueError) as exc:
             _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
             st.error(str(exc))
             return
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
 
-    baseline_label = "Per-period baseline"
-    baseline_metric_value = "Latest implementation"
-    period_baselines: list[float] | None = None
+    baseline_label = "Per-location day-of-year climatology from the full timeline"
+    baseline_metric_value = "Per-location full timeline"
     _debug_print(
         debug_mode,
         "period_baseline_mode",
-        "Using the latest period baseline implementation from processing.new_baseline().",
+        "Using per-location day-of-year climatology from the full fetched timeline.",
         period_aliases=debug_period_aliases,
     )
 
@@ -388,7 +392,6 @@ def main() -> None:
             frames_by_period=period_frames,
             report_start=report_start - timedelta(days=first_period_history_days),
             report_end=analysis_end,
-            period_baselines=period_baselines,
             baseline_start=report_start,
             baseline_end=analysis_end,
             first_period_history_days=first_period_history_days,
@@ -412,7 +415,6 @@ def main() -> None:
         all_periods_report, merged_report = build_period_report_tables(
             periods=periods_preview,
             frames_by_period=period_frames,
-            period_baselines=period_baselines,
             report_start=report_start,
             report_end=analysis_end,
             baseline_start=report_start,
@@ -442,7 +444,7 @@ def main() -> None:
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Stripes shown", int(len(stripe_frame)))
-    metric_columns[1].metric("Baseline", baseline_metric_value)
+    metric_columns[1].metric("Climatology", baseline_metric_value)
     metric_columns[2].metric("Warmest anomaly", f"{stripe_frame['anomaly_c'].max():+.2f} C")
     metric_columns[3].metric("Coolest anomaly", f"{stripe_frame['anomaly_c'].min():+.2f} C")
     st.caption(
@@ -506,8 +508,9 @@ def main() -> None:
         )
     with report_tab:
         st.caption(
-            "Each entered period keeps its own monthly temperature, long-term mean, and "
-            "anomaly columns, even when two periods point to the same place."
+            "Each entered period keeps its own monthly temperature, climatology, and "
+            "anomaly columns. When two periods point to the same place, they reuse the "
+            "same full-location climatology."
         )
         if aggregation_mode == "rolling_365_day":
             st.caption(
@@ -521,8 +524,8 @@ def main() -> None:
         )
     with merged_tab:
         st.caption(
-            "This merged monthly view reads back only the active period schedule. Months "
-            "split across moves are overlap-weighted."
+            "This merged monthly view follows only the active period schedule. Months "
+            "split across moves reflect the active daily series in that month."
         )
         st.dataframe(
             _format_merged_report(merged_report),
@@ -825,12 +828,12 @@ def _aggregation_mode_caption(
             else f"sampled into {rolling_strip_count or 60} evenly spaced strips"
         )
         return (
-            f"Baseline mode: {baseline_label}. Stripe period: 365-day moving average, "
+            f"Climatology: {baseline_label}. Stripe period: 365-day moving average, "
             f"{sampling_text}, through {analysis_end.isoformat()}."
         )
 
     return (
-        f"Baseline mode: {baseline_label}. Stripe period: full calendar years only, so "
+        f"Climatology: {baseline_label}. Stripe period: full calendar years only, so "
         "partial birth and current years are omitted."
     )
 

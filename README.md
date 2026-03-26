@@ -22,12 +22,9 @@ The exported strips are intentionally lightweight, so they can be reused in emai
 - Pulls ERA5-Land monthly `2m_temperature` data for each period.
 - Uses the nearest single ERA5-Land grid cell by default to keep downloads small.
 - Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
-- Aggregates monthly values into stripe periods weighted by the number of covered days in each month.
+- Expands monthly values to daily series before merging periods and aggregating stripe values.
 - Offers full calendar years only as the default stripe period, or a 365-day moving average sampled monthly by default or at an evenly spaced fixed strip count.
-- Colors each stripe period against either:
-  - the average over the timeline shown, or
-  - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place used at that time.
-- Supports location-specific reference periods of `1961-2010`, the timeline's own lifetime window, or a custom date range.
+- Uses the latest per-period baseline implementation from the daily period series before merging them into one timeline.
 - Caches identical ERA5-Land download requests locally, so regenerating the same strips reuses prior monthly data instead of calling CDS again.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
 - Includes a small Python API for preparing stripe data and plotting or saving the result.

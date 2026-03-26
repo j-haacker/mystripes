@@ -21,7 +21,7 @@ class CDSConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "local_cds_credentials.toml"
             save_local_cds_config(
-                key="user:token",
+                key="personal-access-token",
                 url="https://example.test/api",
                 path=path,
             )
@@ -30,24 +30,24 @@ class CDSConfigTests(unittest.TestCase):
 
             self.assertIsNotNone(config)
             assert config is not None
-            self.assertEqual(config.key, "user:token")
+            self.assertEqual(config.key, "personal-access-token")
             self.assertEqual(config.url, "https://example.test/api")
             self.assertEqual(config.source, "local_file")
 
     def test_resolve_prefers_streamlit_secrets_over_local_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {}, clear=True):
             path = Path(tmpdir) / "local_cds_credentials.toml"
-            save_local_cds_config(key="local:token", path=path)
+            save_local_cds_config(key="local-token", path=path)
 
             config = resolve_cds_config(
                 secret_values={
-                    "CDSAPI_KEY": "secret:token",
+                    "CDSAPI_KEY": "secret-token",
                     "CDSAPI_URL": "https://secrets.example/api",
                 },
                 local_credentials_path=path,
             )
 
-            self.assertEqual(config.key, "secret:token")
+            self.assertEqual(config.key, "secret-token")
             self.assertEqual(config.url, "https://secrets.example/api")
             self.assertEqual(config.source, "streamlit_secrets")
 
@@ -55,35 +55,35 @@ class CDSConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
             {
-                "CDSAPI_KEY": "env:token",
+                "CDSAPI_KEY": "env-token",
                 "CDSAPI_URL": "https://env.example/api",
             },
             clear=True,
         ):
             path = Path(tmpdir) / "local_cds_credentials.toml"
-            save_local_cds_config(key="local:token", path=path)
+            save_local_cds_config(key="local-token", path=path)
 
             config = resolve_cds_config(secret_values={}, local_credentials_path=path)
 
-            self.assertEqual(config.key, "env:token")
+            self.assertEqual(config.key, "env-token")
             self.assertEqual(config.url, "https://env.example/api")
             self.assertEqual(config.source, "environment")
 
     def test_resolve_uses_local_file_when_other_sources_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {}, clear=True):
             path = Path(tmpdir) / "local_cds_credentials.toml"
-            save_local_cds_config(key="local:token", path=path)
+            save_local_cds_config(key="local-token", path=path)
 
             config = resolve_cds_config(secret_values={}, local_credentials_path=path)
 
-            self.assertEqual(config.key, "local:token")
+            self.assertEqual(config.key, "local-token")
             self.assertEqual(config.url, DEFAULT_CDSAPI_URL)
             self.assertEqual(config.source, "local_file")
 
     def test_clear_local_credentials_removes_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "local_cds_credentials.toml"
-            save_local_cds_config(key="local:token", path=path)
+            save_local_cds_config(key="local-token", path=path)
 
             clear_local_cds_config(path)
 

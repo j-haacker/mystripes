@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-ERA5_LAND_TIMESERIES_DATASET_NAME = "ERA5 Land hourly time-series data from 1950 to present"
-ERA5_LAND_TIMESERIES_DATASET_URL = (
-    "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-timeseries"
+ERA5_LAND_MONTHLY_DATASET_NAME = "ERA5-Land monthly averaged reanalysis"
+ERA5_LAND_MONTHLY_DATASET_URL = (
+    "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"
 )
 ERA5_LAND_REFERENCE_CITATION = (
-    "Mu\u00f1oz Sabater, J. (2019): ERA5-Land hourly data from 1950 to present. "
-    "Copernicus Climate Change Service (C3S) Climate Data Store (CDS). "
-    "DOI: 10.24381/cds.e2161bac."
+    "Mu\u00f1oz Sabater, J. et al. (2021): ERA5-Land: a state-of-the-art global "
+    "reanalysis dataset for land applications. Earth System Science Data, 13, "
+    "4349-4383."
 )
 GENERATED_GRAPHICS_CC0_NOTICE = (
     "The generated graphic composition is offered under CC0 1.0 to the extent the "

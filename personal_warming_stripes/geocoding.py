@@ -44,6 +44,8 @@ def _result_from_payload(payload: dict[str, Any]) -> GeocodingResult:
         latitude=latitude,
         longitude=longitude,
         coordinate_source=coordinate_source,
+        geojson=payload.get("geojson") if isinstance(payload.get("geojson"), dict) else None,
+        bounding_box=_parse_bounding_box(payload.get("boundingbox")),
     )
 
 
@@ -63,6 +65,13 @@ def _extract_coordinates(payload: dict[str, Any]) -> tuple[float, float, str]:
         return (south + north) / 2.0, (west + east) / 2.0, "bounding box center"
 
     raise ValueError("The geocoder response did not include usable coordinates.")
+
+
+def _parse_bounding_box(value: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    south, north, west, east = [float(item) for item in value]
+    return south, north, west, east
 
 
 def _coordinates_from_geojson(geojson: dict[str, Any]) -> tuple[float, float, str] | None:

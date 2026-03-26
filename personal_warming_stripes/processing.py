@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import date, timedelta
 from typing import Any
 
@@ -63,6 +64,8 @@ def build_periods_from_entries(
                 end_date=current_end,
                 latitude=latitude,
                 longitude=longitude,
+                boundary_geojson=entry.get("boundary_geojson"),
+                bounding_box=entry.get("bounding_box"),
             )
         )
         current_start = current_end + timedelta(days=1)
@@ -80,10 +83,21 @@ def combine_period_frames(
     combined_frames: list[pd.DataFrame] = []
     for period, frame in zip(periods, frames_by_period, strict=True):
         local_frame = frame.copy()
-        mask = _period_mask(local_frame["timestamp"], period.start_date, period.end_date)
-        local_frame = local_frame.loc[mask].copy()
+        local_frame["sample_start_date"] = local_frame["timestamp"].dt.date.map(_sample_start_date)
+        local_frame["sample_end_date"] = local_frame["timestamp"].dt.date.map(_sample_end_date)
+        local_frame["overlap_days"] = local_frame.apply(
+            lambda row: _overlap_days(
+                period.start_date,
+                period.end_date,
+                row["sample_start_date"],
+                row["sample_end_date"],
+            ),
+            axis=1,
+        )
+        local_frame = local_frame.loc[local_frame["overlap_days"] > 0].copy()
         local_frame["period_label"] = period.label
         local_frame["place_name"] = period.display_name
+        local_frame["weighted_temp_sum"] = local_frame["temperature_c"] * local_frame["overlap_days"]
         combined_frames.append(local_frame)
 
     combined = pd.concat(combined_frames, ignore_index=True).sort_values("timestamp")
@@ -91,11 +105,16 @@ def combine_period_frames(
 
     yearly = (
         combined.groupby("year", as_index=False)
-        .agg(mean_temp_c=("temperature_c", "mean"), hours_covered=("temperature_c", "size"))
+        .agg(
+            weighted_temp_sum=("weighted_temp_sum", "sum"),
+            days_covered=("overlap_days", "sum"),
+            months_covered=("timestamp", "size"),
+        )
         .sort_values("year")
         .reset_index(drop=True)
     )
-    yearly["coverage_days_equivalent"] = yearly["hours_covered"] / 24.0
+    yearly["mean_temp_c"] = yearly["weighted_temp_sum"] / yearly["days_covered"]
+    yearly = yearly[["year", "mean_temp_c", "days_covered", "months_covered"]]
     return combined, yearly
 
 
@@ -107,7 +126,17 @@ def build_stripe_frame(yearly: pd.DataFrame, baseline_c: float) -> pd.DataFrame:
 
 
 def calculate_life_period_baseline(yearly: pd.DataFrame) -> float:
+    if "days_covered" in yearly.columns and yearly["days_covered"].sum() > 0:
+        weighted_sum = (yearly["mean_temp_c"] * yearly["days_covered"]).sum()
+        return float(weighted_sum / yearly["days_covered"].sum())
     return float(yearly["mean_temp_c"].mean())
+
+
+def calculate_series_mean_temperature(frame: pd.DataFrame) -> float:
+    if "sample_days" in frame.columns and frame["sample_days"].sum() > 0:
+        weighted_sum = (frame["temperature_c"] * frame["sample_days"]).sum()
+        return float(weighted_sum / frame["sample_days"].sum())
+    return float(frame["temperature_c"].mean())
 
 
 def calculate_weighted_location_baseline(
@@ -158,3 +187,25 @@ def _period_mask(
 ) -> pd.Series:
     dates = timestamps.dt.date
     return (dates >= start_date) & (dates <= end_date)
+
+
+def _sample_start_date(sample_date: date) -> date:
+    return sample_date.replace(day=1)
+
+
+def _sample_end_date(sample_date: date) -> date:
+    last_day = calendar.monthrange(sample_date.year, sample_date.month)[1]
+    return sample_date.replace(day=last_day)
+
+
+def _overlap_days(
+    period_start: date,
+    period_end: date,
+    sample_start: date,
+    sample_end: date,
+) -> int:
+    overlap_start = max(period_start, sample_start)
+    overlap_end = min(period_end, sample_end)
+    if overlap_start > overlap_end:
+        return 0
+    return (overlap_end - overlap_start).days + 1

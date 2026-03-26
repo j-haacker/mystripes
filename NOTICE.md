@@ -10,11 +10,11 @@ For public outputs, include a visible Copernicus acknowledgement in the form rec
 
 ## Dataset references
 
-- Access path used by this app: `ERA5 Land hourly time-series data from 1950 to present`
-  <https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-timeseries>
+- Access path used by this app: `ERA5-Land monthly averaged reanalysis`
+  <https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means>
 - Underlying ERA5-Land citation:
 
-  `Muñoz Sabater, J. (2019): ERA5-Land hourly data from 1950 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). DOI: 10.24381/cds.e2161bac.`
+  `Muñoz Sabater, J. et al. (2021): ERA5-Land: a state-of-the-art global reanalysis dataset for land applications. Earth System Science Data, 13, 4349-4383.`
 
 ## Generated graphics
 

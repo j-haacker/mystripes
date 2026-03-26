@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,8 @@ class GeocodingResult:
     latitude: float
     longitude: float
     coordinate_source: str
+    geojson: Mapping[str, Any] | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,8 @@ class LifePeriod:
     end_date: date
     latitude: float
     longitude: float
+    boundary_geojson: Mapping[str, Any] | None = None
+    bounding_box: tuple[float, float, float, float] | None = None
 
     @property
     def display_name(self) -> str:
@@ -45,4 +51,7 @@ class LifePeriod:
 
     @property
     def location_key(self) -> str:
-        return f"{self.latitude:.4f},{self.longitude:.4f}"
+        parts = [f"{self.latitude:.4f},{self.longitude:.4f}"]
+        if self.bounding_box is not None:
+            parts.append(",".join(f"{value:.4f}" for value in self.bounding_box))
+        return "|".join(parts)

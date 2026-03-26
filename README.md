@@ -1,6 +1,6 @@
 # Personal Warming Stripes
 
-This app lets non-technical users create a warming-stripes graphic from their own life history. They enter the places they have lived, the dates when they moved, and the app fetches ERA5-Land point time series from the Copernicus Climate Data Store before producing a minimalist stripe export.
+This app lets non-technical users create a warming-stripes graphic from their own life history. They enter the places they have lived, the dates when they moved, and the app fetches ERA5-Land monthly temperature data from the Copernicus Climate Data Store before producing a minimalist stripe export.
 
 ## Why this stack
 
@@ -13,8 +13,10 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 - Accepts a flexible number of living periods between birth and the latest available ERA5-Land date.
 - Lets users search for cities, regions, and countries by name or enter coordinates manually.
 - Auto-fills coordinates from the geocoder result, using an area centroid when the result is a polygon or multipolygon.
-- Pulls ERA5-Land `2m_temperature` point series for each period.
-- Aggregates hourly data into yearly means.
+- Pulls ERA5-Land monthly `2m_temperature` data for each period.
+- Uses the nearest single ERA5-Land grid cell by default to keep downloads small.
+- Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
+- Aggregates monthly values into yearly means, weighted by the number of covered days in each month.
 - Colors each year as a warming stripe against either:
   - the average over the user's own life-period series, or
   - a weighted 1961-2010 baseline across the locations they lived in.
@@ -30,19 +32,24 @@ This app lets non-technical users create a warming-stripes graphic from their ow
    pip install -r requirements.txt
    ```
 
-2. Choose one local credential option:
+2. Choose one credential option:
 
    Option A: save a token from the app sidebar.
    The app can store your CDS token in `.streamlit/local_cds_credentials.toml`, which is gitignored.
 
-   Option B: create `.streamlit/secrets.toml` from the example file:
+   Option B: enter a session-only token or legacy `user_id` plus API key in the sidebar.
+   These values stay only in Streamlit session state, are never written to disk by the app, and are intended as a fallback if the default configured token fails.
+
+   Option C: create `.streamlit/secrets.toml` from the example file:
 
    ```toml
    CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
    CDSAPI_KEY = "your-personal-access-token"
    ```
 
-3. Start the app:
+3. Make sure the CDS licence for `reanalysis-era5-land-monthly-means` has been accepted for the account whose token you use.
+
+4. Start the app:
 
    ```bash
    streamlit run app.py
@@ -79,17 +86,19 @@ Deployment steps:
 3. Add `CDSAPI_KEY` and optional `CDSAPI_URL` in the app secrets.
 4. Redeploy.
 
-When Streamlit secrets are available, the app prefers them over any locally saved credential file.
+When Streamlit secrets are available, the app prefers them over any locally saved credential file. A user can still enter a session-only override during their own browser session without changing the deployed secret.
 
 Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another free public host.
 
 ## Data and method notes
 
-- Climate data source: ERA5-Land hourly point time series from the Copernicus Climate Data Store.
+- Climate data source: ERA5-Land monthly means from the Copernicus Climate Data Store.
 - Geocoding source: OpenStreetMap Nominatim search API.
-- The CDS point service returns the nearest native grid cell, not a station record.
-- The current year is shown as a partial year through the latest date exposed by the CDS point dataset.
-- If the person was born before `1950-01-02`, the stripes start at `1950-01-02` because ERA5-Land point data does not go earlier.
+- Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
+- Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
+- Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
+- The current year is shown as a partial year through the latest date exposed by the monthly dataset.
+- If the person was born before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
 ## Operational notes
 

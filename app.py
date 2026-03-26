@@ -21,8 +21,8 @@ from personal_warming_stripes.geocoding import search_places
 from personal_warming_stripes.models import CDSConfig
 from personal_warming_stripes.notices import (
     ERA5_LAND_REFERENCE_CITATION,
-    ERA5_LAND_TIMESERIES_DATASET_NAME,
-    ERA5_LAND_TIMESERIES_DATASET_URL,
+    ERA5_LAND_MONTHLY_DATASET_NAME,
+    ERA5_LAND_MONTHLY_DATASET_URL,
     GENERATED_GRAPHICS_CC0_NOTICE,
     SOFTWARE_MIT_NOTICE,
     copernicus_credit_notice,
@@ -31,6 +31,7 @@ from personal_warming_stripes.plotting import export_figure_bytes, render_stripe
 from personal_warming_stripes.processing import (
     build_periods_from_entries,
     build_stripe_frame,
+    calculate_series_mean_temperature,
     calculate_life_period_baseline,
     calculate_weighted_location_baseline,
     combine_period_frames,
@@ -54,18 +55,6 @@ def cached_search_places(query: str):
     return search_places(query)
 
 
-@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
-def cached_fetch_point_series(latitude: float, longitude: float, start_iso: str, end_iso: str):
-    config = resolve_cds_config(st.secrets)
-    return fetch_point_temperature_series(
-        config=config,
-        latitude=latitude,
-        longitude=longitude,
-        start_date=date.fromisoformat(start_iso),
-        end_date=date.fromisoformat(end_iso),
-    )
-
-
 def main() -> None:
     dataset_window = cached_dataset_window()
     today = date.today()
@@ -73,14 +62,14 @@ def main() -> None:
 
     st.title("Personal warming stripes")
     st.write(
-        "Generate warming stripes from your own life history using ERA5-Land point time "
-        "series. Add the places you have lived, the dates when you moved, and export a "
-        "minimal stripe graphic in PNG, SVG, or PDF."
+        "Generate warming stripes from your own life history using ERA5-Land monthly "
+        "temperature data. Add the places you have lived, the dates when you moved, "
+        "and export a minimal stripe graphic in PNG, SVG, or PDF."
     )
 
     if today > dataset_window.max_end:
         st.info(
-            f"ERA5-Land point data is currently available through "
+            f"ERA5-Land monthly data is currently available through "
             f"`{dataset_window.max_end.isoformat()}`. The current period ends there."
         )
 
@@ -105,24 +94,47 @@ def main() -> None:
         ),
         help=(
             "The weighted 1961-2010 option makes extra ERA5-Land requests for each unique "
-            "location and weights them by how long you lived there."
+            "location, using the same spatial aggregation mode, and weights them by how "
+            "long you lived there."
         ),
     )
     width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
     transparent_background = sidebar.checkbox("Transparent background", value=False)
+    spatial_mode = sidebar.selectbox(
+        "Spatial aggregation",
+        options=("single_cell", "radius", "boundary"),
+        format_func=lambda value: {
+            "single_cell": "Nearest single grid cell",
+            "radius": "Average grid cells in a radius",
+            "boundary": "Average grid cells inside place boundary",
+        }[value],
+        help=(
+            "Monthly data is downloaded from the ERA5-Land monthly dataset. Radius mode "
+            "averages grid cells inside the chosen radius. Boundary mode uses the "
+            "municipality, district, region, or other place polygon returned by the "
+            "geocoder when available, with a bounding-box fallback when only an area "
+            "extent is available."
+        ),
+    )
+    radius_km = None
+    if spatial_mode == "radius":
+        radius_km = float(
+            sidebar.number_input("Radius (km)", min_value=5.0, max_value=250.0, value=25.0, step=5.0)
+        )
 
     if active_cds_config is None:
         st.info(
             "This app needs a Copernicus Climate Data Store account and API key. Save a local "
-            "token from the sidebar for development, or configure `CDSAPI_KEY` in Streamlit "
-            "secrets for deployment."
+            "token from the sidebar for development, enter a session-only override, or "
+            "configure `CDSAPI_KEY` in Streamlit secrets for deployment."
         )
     else:
         st.info(
-            f"Using CDS credentials from `{active_cds_config.source}`. The point data comes "
-            "from the nearest ERA5-Land grid cell, not an interpolated station value."
+            f"Using CDS credentials from `{active_cds_config.source}`. The app requests "
+            "ERA5-Land monthly means from the monthly dataset and snaps the request area to "
+            "the native 0.1 degree grid."
         )
     _render_credit_and_license_panel(today.year)
 
@@ -172,7 +184,8 @@ def main() -> None:
                 placeholder="Vienna, Austria or Tyrol, Austria",
                 help=(
                     "Search by city, state, province, region, or country. Area results use "
-                    "a centroid to auto-fill coordinates."
+                    "a centroid to auto-fill coordinates and can also supply an area "
+                    "boundary for boundary aggregation."
                 ),
             )
 
@@ -190,6 +203,8 @@ def main() -> None:
                             "latitude": result.latitude,
                             "longitude": result.longitude,
                             "coordinate_source": result.coordinate_source,
+                            "geojson": result.geojson,
+                            "bounding_box": result.bounding_box,
                         }
                         for result in results
                     ]
@@ -219,6 +234,8 @@ def main() -> None:
                 st.caption(f"Using: {resolved_name} ({coordinate_source})")
             else:
                 st.caption(f"Using: {resolved_name}")
+            if spatial_mode == "boundary":
+                st.caption(_boundary_mode_caption(entry))
 
             coordinate_columns = st.columns(2)
             entry["latitude_text"] = coordinate_columns[0].text_input(
@@ -254,19 +271,24 @@ def main() -> None:
 
     if active_cds_config is None:
         st.error(
-            "Missing CDSAPI_KEY. Add it to Streamlit secrets, environment variables, or save "
-            "it locally from the app sidebar."
+            "Missing CDS credentials. Add them to Streamlit secrets, environment variables, "
+            "enter a session-only override, or save a local token from the app sidebar."
         )
         return
 
-    with st.spinner("Downloading ERA5-Land point series for your life periods..."):
+    with st.spinner("Downloading ERA5-Land monthly data for your life periods..."):
         try:
             period_frames = [
-                cached_fetch_point_series(
-                    period.latitude,
-                    period.longitude,
-                    period.start_date.isoformat(),
-                    period.end_date.isoformat(),
+                fetch_point_temperature_series(
+                    config=active_cds_config,
+                    latitude=period.latitude,
+                    longitude=period.longitude,
+                    start_date=period.start_date,
+                    end_date=period.end_date,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    boundary_geojson=period.boundary_geojson,
+                    boundary_bbox=period.bounding_box,
                 )
                 for period in periods_preview
             ]
@@ -282,14 +304,21 @@ def main() -> None:
         with st.spinner("Calculating weighted 1961-2010 location baseline..."):
             try:
                 baseline_by_location: dict[str, float] = {}
+                periods_by_location = {period.location_key: period for period in periods_preview}
                 for location_key, (latitude, longitude) in unique_locations(periods_preview).items():
-                    baseline_series = cached_fetch_point_series(
-                        latitude,
-                        longitude,
-                        "1961-01-01",
-                        "2010-12-31",
+                    period = periods_by_location[location_key]
+                    baseline_series = fetch_point_temperature_series(
+                        config=active_cds_config,
+                        latitude=latitude,
+                        longitude=longitude,
+                        start_date=date(1961, 1, 1),
+                        end_date=date(2010, 12, 31),
+                        spatial_mode=spatial_mode,
+                        radius_km=radius_km,
+                        boundary_geojson=period.boundary_geojson,
+                        boundary_bbox=period.bounding_box,
                     )
-                    baseline_by_location[location_key] = float(baseline_series["temperature_c"].mean())
+                    baseline_by_location[location_key] = calculate_series_mean_temperature(baseline_series)
                 baseline_c = calculate_weighted_location_baseline(periods_preview, baseline_by_location)
             except CDSRequestError as exc:
                 st.error(str(exc))
@@ -321,6 +350,12 @@ def main() -> None:
         f"Baseline mode: {baseline_label}. Current year is included as a partial year through "
         f"{analysis_end.isoformat()}."
     )
+    if spatial_mode == "radius" and radius_km is not None:
+        st.caption(f"Spatial aggregation: mean across grid cells within {radius_km:.0f} km.")
+    elif spatial_mode == "boundary":
+        st.caption("Spatial aggregation: mean across grid cells inside the selected place boundary.")
+    else:
+        st.caption("Spatial aggregation: nearest single ERA5-Land grid cell.")
 
     download_columns = st.columns(3)
     download_columns[0].download_button(
@@ -366,7 +401,8 @@ def main() -> None:
         yearly_display = stripe_frame.copy()
         yearly_display["mean_temp_c"] = yearly_display["mean_temp_c"].round(2)
         yearly_display["anomaly_c"] = yearly_display["anomaly_c"].round(2)
-        yearly_display["coverage_days_equivalent"] = yearly_display["coverage_days_equivalent"].round(1)
+        yearly_display["days_covered"] = yearly_display["days_covered"].round(0).astype(int)
+        yearly_display["months_covered"] = yearly_display["months_covered"].round(0).astype(int)
         st.dataframe(yearly_display, use_container_width=True, hide_index=True)
 
     # Free the figure after export.
@@ -383,6 +419,14 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.local_cds_url = local_config.url if local_config else DEFAULT_CDSAPI_URL
     if "local_cds_key" not in st.session_state:
         st.session_state.local_cds_key = local_config.key if local_config else ""
+    if "session_cds_url" not in st.session_state:
+        st.session_state.session_cds_url = DEFAULT_CDSAPI_URL
+    if "session_cds_token" not in st.session_state:
+        st.session_state.session_cds_token = ""
+    if "session_cds_user_id" not in st.session_state:
+        st.session_state.session_cds_user_id = ""
+    if "session_cds_api_key" not in st.session_state:
+        st.session_state.session_cds_api_key = ""
 
 
 def _blank_entry() -> dict[str, object]:
@@ -393,28 +437,73 @@ def _blank_entry() -> dict[str, object]:
         "latitude_text": "",
         "longitude_text": "",
         "coordinate_source": "",
+        "boundary_geojson": None,
+        "bounding_box": None,
         "end_date": None,
     }
 
 
 def _render_cds_access_panel(sidebar) -> CDSConfig | None:
     try:
-        active_cds_config = resolve_cds_config(st.secrets)
+        persisted_config = resolve_cds_config(st.secrets)
     except CDSCredentialsMissingError:
-        active_cds_config = None
+        persisted_config = None
+
+    session_override = _session_override_config()
+    active_cds_config = session_override or persisted_config
 
     with sidebar.expander("CDS access", expanded=active_cds_config is None):
+        st.caption(
+            "The CDS licence for the dataset must be accepted first for the account you use. "
+            "Session-only credentials entered below stay only in this Streamlit session and "
+            "are never written to disk by the app."
+        )
+
         if active_cds_config is None:
             st.warning("No CDS credentials are configured yet.")
         else:
             st.success(f"Using `{active_cds_config.source}` for CDS access.")
 
-        if active_cds_config is not None and active_cds_config.source == "streamlit_secrets":
-            st.caption(
-                "This deployment is using Streamlit secrets. Locally saved credentials stay "
-                "ignored while those secrets are present."
+        st.text_input(
+            "Session CDS API URL",
+            key="session_cds_url",
+            help="Used only for the current Streamlit session.",
+        )
+        st.text_input(
+            "Session private token",
+            key="session_cds_token",
+            type="password",
+            help="Personal access token, session only, never written to disk.",
+        )
+        session_columns = st.columns(2)
+        session_columns[0].text_input(
+            "Session legacy user ID",
+            key="session_cds_user_id",
+            help="Optional legacy fallback. Session only.",
+        )
+        session_columns[1].text_input(
+            "Session legacy API key",
+            key="session_cds_api_key",
+            type="password",
+            help="Optional legacy fallback. Session only.",
+        )
+        if st.button("Clear session override", key="clear_session_cds"):
+            st.session_state.session_cds_url = DEFAULT_CDSAPI_URL
+            st.session_state.session_cds_token = ""
+            st.session_state.session_cds_user_id = ""
+            st.session_state.session_cds_api_key = ""
+            st.success("Removed session-only CDS credentials.")
+            st.rerun()
+
+        if (
+            not str(st.session_state.session_cds_token).strip()
+            and (
+                str(st.session_state.session_cds_user_id).strip()
+                or str(st.session_state.session_cds_api_key).strip()
             )
-            return active_cds_config
+            and not _has_complete_legacy_session_credentials()
+        ):
+            st.warning("To use legacy session credentials, enter both the user ID and the API key.")
 
         st.text_input(
             "Local CDS API URL",
@@ -452,6 +541,11 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
             "Local credentials are written to `.streamlit/local_cds_credentials.toml`, which "
             "is gitignored."
         )
+        if persisted_config is not None and persisted_config.source == "streamlit_secrets" and session_override is None:
+            st.caption(
+                "This deployment is using Streamlit secrets. Session-only overrides take "
+                "precedence if you enter them here."
+            )
 
     return active_cds_config
 
@@ -459,8 +553,8 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
 def _render_credit_and_license_panel(current_year: int) -> None:
     with st.expander("Credits and licenses", expanded=False):
         st.markdown(
-            f"- Climate data access: `{ERA5_LAND_TIMESERIES_DATASET_NAME}`\n"
-            f"- Dataset page: {ERA5_LAND_TIMESERIES_DATASET_URL}\n"
+            f"- Climate data access: `{ERA5_LAND_MONTHLY_DATASET_NAME}`\n"
+            f"- Dataset page: {ERA5_LAND_MONTHLY_DATASET_URL}\n"
             f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
             f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
             f"- Generated graphics: {GENERATED_GRAPHICS_CC0_NOTICE}\n"
@@ -486,6 +580,8 @@ def _apply_geocoding_choice(index: int, result: dict[str, object]) -> None:
     entry["latitude_text"] = f"{float(result['latitude']):.4f}"
     entry["longitude_text"] = f"{float(result['longitude']):.4f}"
     entry["coordinate_source"] = str(result.get("coordinate_source", "")).strip()
+    entry["boundary_geojson"] = result.get("geojson")
+    entry["bounding_box"] = result.get("bounding_box")
     st.session_state[f"latitude_{index}"] = entry["latitude_text"]
     st.session_state[f"longitude_{index}"] = entry["longitude_text"]
 
@@ -497,6 +593,26 @@ def _current_choice_index(results: list[dict[str, object]], resolved_name: str) 
         if result["display_name"] == resolved_name:
             return index
     return 0
+
+
+def _session_override_config() -> CDSConfig | None:
+    session_url = str(st.session_state.get("session_cds_url", "")).strip() or DEFAULT_CDSAPI_URL
+    session_token = str(st.session_state.get("session_cds_token", "")).strip()
+    if session_token:
+        return CDSConfig(url=session_url, key=session_token, source="session_private_token")
+
+    if _has_complete_legacy_session_credentials():
+        user_id = str(st.session_state.get("session_cds_user_id", "")).strip()
+        api_key = str(st.session_state.get("session_cds_api_key", "")).strip()
+        return CDSConfig(url=session_url, key=f"{user_id}:{api_key}", source="session_user_credentials")
+
+    return None
+
+
+def _has_complete_legacy_session_credentials() -> bool:
+    user_id = str(st.session_state.get("session_cds_user_id", "")).strip()
+    api_key = str(st.session_state.get("session_cds_api_key", "")).strip()
+    return bool(user_id and api_key)
 
 
 def _period_range_label(
@@ -515,6 +631,20 @@ def _period_range_label(
         if isinstance(current_end, date):
             current_start = current_end + timedelta(days=1)
     return birth_date.isoformat(), analysis_end.isoformat()
+
+
+def _boundary_mode_caption(entry: dict[str, object]) -> str:
+    boundary_geojson = entry.get("boundary_geojson")
+    if isinstance(boundary_geojson, dict) and str(boundary_geojson.get("type", "")).lower() in {
+        "polygon",
+        "multipolygon",
+    }:
+        return "Boundary mode will use the selected municipality, district, region, or other place polygon."
+
+    if entry.get("bounding_box") is not None:
+        return "Boundary mode will fall back to the geocoder area extent because no polygon boundary was returned."
+
+    return "Boundary mode needs a geocoder result with an area boundary or area extent."
 
 
 if __name__ == "__main__":

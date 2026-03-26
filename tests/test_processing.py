@@ -335,11 +335,11 @@ class ProcessingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            full_report["Period 1: Cold place longterm_mean_c"].round(2).tolist(),
+            full_report["Period 1: Cold place climatology_c"].round(2).tolist(),
             [1.0, 3.0],
         )
         self.assertEqual(
-            full_report["Period 2: Warm place longterm_mean_c"].round(2).tolist(),
+            full_report["Period 2: Warm place climatology_c"].round(2).tolist(),
             [11.0, 15.0],
         )
         self.assertEqual(

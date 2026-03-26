@@ -123,7 +123,7 @@ def build_period_report_tables(
         .groupby("timestamp", as_index=False)
         .agg(
             temperature_c=("temperature_c", "mean"),
-            longterm_mean_c=("longterm_mean_c", "mean"),
+            climatology_c=("climatology_c", "mean"),
             anomaly_c=("anomaly_c", "mean"),
             days_covered=("daily_date", "size"),
             current_period=("current_period", _join_unique_values),
@@ -140,7 +140,7 @@ def build_period_report_tables(
             "current_period",
             "current_place",
             "temperature_c",
-            "longterm_mean_c",
+            "climatology_c",
             "anomaly_c",
             "days_covered",
         ]
@@ -344,7 +344,7 @@ def _assemble_merged_daily_series(
         report_end=report_end,
         first_period_history_days=first_period_history_days,
     )
-    merged["longterm_mean_c"] = new_merge(
+    merged["climatology_c"] = new_merge(
         daily_baseline,
         periods,
         report_start=report_start,
@@ -368,7 +368,7 @@ def _assemble_merged_daily_series(
             "current_period",
             "current_place",
             "temperature_c",
-            "longterm_mean_c",
+            "climatology_c",
             "anomaly_c",
         ]
     ]
@@ -431,7 +431,7 @@ def _aggregate_rolling_daily_series_from_daily(
         )
 
     daily["mean_temp_c"] = daily["temperature_c"].rolling(window=365, min_periods=365).mean()
-    daily["baseline_c"] = daily["longterm_mean_c"].rolling(window=365, min_periods=365).mean()
+    daily["baseline_c"] = daily["climatology_c"].rolling(window=365, min_periods=365).mean()
     daily["anomaly_c"] = daily["anomaly_c"].rolling(window=365, min_periods=365).mean()
 
     valid = daily.loc[daily["mean_temp_c"].notna()].copy()
@@ -508,7 +508,7 @@ def new_yearly(merged: pd.DataFrame) -> pd.DataFrame:
         daily.groupby("year", as_index=False)
         .agg(
             mean_temp_c=("temperature_c", "mean"),
-            baseline_c=("longterm_mean_c", "mean"),
+            baseline_c=("climatology_c", "mean"),
             anomaly_c=("anomaly_c", "mean"),
             days_covered=("daily_date", "size"),
         )
@@ -572,7 +572,7 @@ def _build_full_period_report(
     full_report["sample_date"] = full_report["timestamp"].dt.date
     for period_key in monthly_temperature.columns:
         full_report[f"{period_key} temperature_c"] = monthly_temperature[period_key].to_numpy()
-        full_report[f"{period_key} longterm_mean_c"] = monthly_baseline[period_key].to_numpy()
+        full_report[f"{period_key} climatology_c"] = monthly_baseline[period_key].to_numpy()
         full_report[f"{period_key} anomaly_c"] = monthly_anomaly[period_key].to_numpy()
     return full_report
 

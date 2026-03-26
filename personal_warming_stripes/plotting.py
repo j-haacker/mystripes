@@ -4,17 +4,24 @@ from io import BytesIO
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import ListedColormap
 
 STRIPES_COLORS = [
     "#08306b",
+    "#08519c",
     "#2171b5",
+    "#4292c6",
     "#6baed6",
+    "#9ecae1",
     "#c6dbef",
-    "#f7f7f7",
+    "#deebf7",
+    "#fee0d2",
     "#fcbba1",
+    "#fc9272",
     "#fb6a4a",
+    "#ef3b2c",
     "#cb181d",
+    "#a50f15",
     "#67000d",
 ]
 
@@ -39,7 +46,7 @@ def render_stripes_figure(
     axis.imshow(
         values,
         aspect="auto",
-        cmap=LinearSegmentedColormap.from_list("warming_stripes", STRIPES_COLORS),
+        cmap=ListedColormap(STRIPES_COLORS),
         interpolation="nearest",
         vmin=-color_limit,
         vmax=color_limit,

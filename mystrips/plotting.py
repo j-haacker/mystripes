@@ -30,7 +30,6 @@ def render_stripes_figure(
     anomalies: list[float],
     width_inches: float,
     height_inches: float,
-    transparent_background: bool,
 ) -> plt.Figure:
     if not anomalies:
         raise ValueError("At least one anomaly is required to render strips.")
@@ -41,7 +40,6 @@ def render_stripes_figure(
     figure, axis = plt.subplots(
         figsize=(width_inches, height_inches),
         dpi=100,
-        facecolor="none" if transparent_background else "white",
     )
     axis.imshow(
         values,
@@ -60,10 +58,9 @@ def export_figure_bytes(
     figure: plt.Figure,
     fmt: str,
     png_dpi: int,
-    transparent_background: bool,
 ) -> bytes:
     buffer = BytesIO()
-    save_kwargs: dict[str, object] = {"format": fmt, "transparent": transparent_background}
+    save_kwargs: dict[str, object] = {"format": fmt}
     if fmt == "png":
         save_kwargs["dpi"] = png_dpi
     figure.savefig(buffer, **save_kwargs)

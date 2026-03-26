@@ -65,8 +65,8 @@ def main() -> None:
     st.title("MyStrips")
     st.write(
         "Build climate strips from places and periods using ERA5-Land monthly temperature "
-        "data. Use it for life stations, multi-home stories, projects, teams, tours, or "
-        "other place-based timelines, then export a minimal graphic in PNG, SVG, or PDF."
+        "data. Use it as climate change signature of sufficiently long place-based "
+        "timelines (e.g. your life), then export a minimal graphic in PNG, SVG, or PDF."
     )
 
     if today > dataset_window.max_end:
@@ -82,13 +82,32 @@ def main() -> None:
     sidebar.header("Output")
     birth_date = sidebar.date_input(
         "Timeline start",
-        value=st.session_state.birth_date,
         min_value=date(1900, 1, 1),
         max_value=analysis_end,
         key="birth_date",
         help="For personal timelines, set this to your birth date.",
     )
-    file_stem = sidebar.text_input("Download name", value="mystrips")
+    spatial_mode = sidebar.selectbox(
+        "Spatial aggregation",
+        options=("single_cell", "radius", "boundary"),
+        format_func=lambda value: {
+            "single_cell": "Nearest single grid cell",
+            "radius": "Average grid cells in a radius",
+            "boundary": "Average grid cells inside place boundary",
+        }[value],
+        help=(
+            "Monthly data is downloaded from the ERA5-Land monthly dataset. Radius mode "
+            "averages grid cells inside the chosen radius. Boundary mode uses the "
+            "municipality, district, region, or other place polygon returned by the "
+            "geocoder when available, with a bounding-box fallback when only an area "
+            "extent is available."
+        ),
+    )
+    radius_km = None
+    if spatial_mode == "radius":
+        radius_km = float(
+            sidebar.number_input("Radius (km)", min_value=5.0, max_value=250.0, value=25.0, step=5.0)
+        )
     baseline_mode = sidebar.selectbox(
         "Baseline",
         options=(
@@ -154,28 +173,7 @@ def main() -> None:
     width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
-    transparent_background = sidebar.checkbox("Transparent background", value=False)
-    spatial_mode = sidebar.selectbox(
-        "Spatial aggregation",
-        options=("single_cell", "radius", "boundary"),
-        format_func=lambda value: {
-            "single_cell": "Nearest single grid cell",
-            "radius": "Average grid cells in a radius",
-            "boundary": "Average grid cells inside place boundary",
-        }[value],
-        help=(
-            "Monthly data is downloaded from the ERA5-Land monthly dataset. Radius mode "
-            "averages grid cells inside the chosen radius. Boundary mode uses the "
-            "municipality, district, region, or other place polygon returned by the "
-            "geocoder when available, with a bounding-box fallback when only an area "
-            "extent is available."
-        ),
-    )
-    radius_km = None
-    if spatial_mode == "radius":
-        radius_km = float(
-            sidebar.number_input("Radius (km)", min_value=5.0, max_value=250.0, value=25.0, step=5.0)
-        )
+    file_stem = sidebar.text_input("Download name", value="mystrips")
 
     if active_cds_config is None:
         st.info(
@@ -189,6 +187,7 @@ def main() -> None:
             "ERA5-Land monthly means from the monthly dataset and snaps the request area to "
             "the native 0.1 degree grid."
         )
+
     _render_credit_and_license_panel(today.year)
 
     controls = st.columns((1, 1, 2))
@@ -412,12 +411,11 @@ def main() -> None:
         anomalies=stripe_frame["anomaly_c"].tolist(),
         width_inches=width_inches,
         height_inches=height_inches,
-        transparent_background=transparent_background,
     )
 
-    png_bytes = export_figure_bytes(figure, "png", png_dpi, transparent_background)
-    svg_bytes = export_figure_bytes(figure, "svg", png_dpi, transparent_background)
-    pdf_bytes = export_figure_bytes(figure, "pdf", png_dpi, transparent_background)
+    png_bytes = export_figure_bytes(figure, "png", png_dpi)
+    svg_bytes = export_figure_bytes(figure, "svg", png_dpi)
+    pdf_bytes = export_figure_bytes(figure, "pdf", png_dpi)
 
     st.subheader("Preview")
     st.image(png_bytes, use_container_width=True)

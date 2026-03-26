@@ -108,7 +108,6 @@ def plot_stripes(
     width_px: int = 1800,
     height_px: int = 260,
     dpi: int = 200,
-    transparent_background: bool = False,
     output_path: str | Path | None = None,
     fmt: Literal["png", "svg", "pdf"] | None = None,
 ) -> Figure:
@@ -122,7 +121,6 @@ def plot_stripes(
         anomalies=stripe_frame["anomaly_c"].astype(float).tolist(),
         width_inches=width_px / dpi,
         height_inches=height_px / dpi,
-        transparent_background=transparent_background,
     )
 
     if output_path is not None:
@@ -134,7 +132,6 @@ def plot_stripes(
             figure=figure,
             fmt=output_format,
             png_dpi=dpi,
-            transparent_background=transparent_background,
         )
         path.write_bytes(payload)
 

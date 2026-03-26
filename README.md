@@ -60,6 +60,18 @@ The exported strips are intentionally lightweight, so they can be reused in emai
    streamlit run app.py
    ```
 
+## Packaging
+
+This repository now includes [pyproject.toml](pyproject.toml) so the `mystrips` package can be built and published on PyPI.
+
+Typical release steps:
+
+```bash
+python -m build
+python -m twine check dist/*
+python -m twine upload dist/*
+```
+
 ## Python API
 
 For scripts and notebooks, use `build_stripe_data(...)` to turn periods plus monthly temperature frames into a stripe-data bundle, then pass that bundle to `plot_stripes(...)` to render or save the figure.
@@ -102,6 +114,24 @@ Deployment steps:
 When Streamlit secrets are available, the app prefers them over any locally saved credential file. A user can still enter a session-only override during their own browser session without changing the deployed secret.
 
 Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another free public host.
+
+## uv.lock
+
+If you want Streamlit Community Cloud to use `uv.lock` for faster installs, you do not need to adopt uv as your normal workflow. After editing dependencies in [pyproject.toml](pyproject.toml), create or refresh the lockfile once from the repo root:
+
+```bash
+uv lock
+```
+
+If you do not normally use uv, a simple one-off approach is:
+
+```bash
+python -m pip install uv
+uv lock
+python -m pip uninstall uv
+```
+
+Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pipfile`, `environment.yml`, `requirements.txt`, then `pyproject.toml`. So committing `uv.lock` is enough to make the deployment prefer that lockfile over `requirements.txt`.
 
 ## Data and method notes
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from mystrips.cds import (
+from mystripes.cds import (
     CDSRequestError,
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,
@@ -17,7 +17,7 @@ from mystrips.cds import (
     fetch_point_temperature_series,
     parse_temperature_file,
 )
-from mystrips.models import CDSConfig
+from mystripes.models import CDSConfig
 
 
 class MonthlyCDSTests(unittest.TestCase):
@@ -153,8 +153,8 @@ class MonthlyCDSTests(unittest.TestCase):
             fake_cdsapi = SimpleNamespace(Client=FakeClient)
 
             with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
-                with patch("mystrips.cds.parse_temperature_file", return_value=pd.DataFrame()):
-                    with patch("mystrips.cds._aggregate_spatial_selection", return_value=aggregated):
+                with patch("mystripes.cds.parse_temperature_file", return_value=pd.DataFrame()):
+                    with patch("mystripes.cds._aggregate_spatial_selection", return_value=aggregated):
                         first = fetch_point_temperature_series(
                             config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
                             latitude=48.2082,

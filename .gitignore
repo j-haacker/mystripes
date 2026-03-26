@@ -3,7 +3,7 @@ __pycache__/
 .streamlit/local_cds_credentials.toml
 .pytest_cache/
 *.pyc
-.mystrips-cache/
+.mystripes-cache/
 build/
 dist/
 *.egg-info/

@@ -1,6 +1,6 @@
 # Data Credit Notice
 
-MyStrips uses ERA5-Land data accessed through the Copernicus Climate Change Service (C3S) Climate Data Store (CDS).
+MyStripes uses ERA5-Land data accessed through the Copernicus Climate Change Service (C3S) Climate Data Store (CDS).
 
 This project was inspired by [ShowYourStripes.info](https://showyourstripes.info/), the #ShowYourStripes project by Professor Ed Hawkins and the University of Reading.
 

@@ -5,10 +5,10 @@ from typing import Any
 
 import requests
 
-from mystrips.models import GeocodingResult
+from mystripes.models import GeocodingResult
 
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
-DEFAULT_USER_AGENT = "mystrips/0.1"
+DEFAULT_USER_AGENT = "mystripes/0.1"
 
 
 def search_places(query: str, limit: int = 5) -> list[GeocodingResult]:

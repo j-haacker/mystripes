@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from mystrips.models import CDSConfig, DatasetWindow
+from mystripes.models import CDSConfig, DatasetWindow
 
 DATASET_NAME = "reanalysis-era5-land-monthly-means"
 DATASET_URL = "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"
@@ -27,7 +27,7 @@ CONSTRAINTS_URL = (
 )
 DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
 LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
-TEMPERATURE_CACHE_DIR = Path(".mystrips-cache")
+TEMPERATURE_CACHE_DIR = Path(".mystripes-cache")
 GRID_STEP_DEGREES = 0.1
 
 

@@ -3,7 +3,7 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mystrips"
+name = "mystripes"
 version = "0.1.0"
 description = "Create climate strips from place-based timelines."
 readme = "README.md"
@@ -38,4 +38,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mystrips"]
+packages = ["mystripes"]

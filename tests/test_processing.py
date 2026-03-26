@@ -5,8 +5,8 @@ from datetime import date
 
 import pandas as pd
 
-from mystrips.models import LifePeriod
-from mystrips.processing import (
+from mystripes.models import LifePeriod
+from mystripes.processing import (
     build_location_baseline_stripe_frame,
     build_periods_from_entries,
     build_stripe_frame,

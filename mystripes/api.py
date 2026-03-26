@@ -8,9 +8,9 @@ from typing import Any, Literal
 import pandas as pd
 from matplotlib.figure import Figure
 
-from mystrips.models import LifePeriod
-from mystrips.plotting import export_figure_bytes, render_stripes_figure
-from mystrips.processing import (
+from mystripes.models import LifePeriod
+from mystripes.plotting import export_figure_bytes, render_stripes_figure
+from mystripes.processing import (
     build_location_baseline_stripe_frame,
     build_stripe_frame,
     calculate_life_period_baseline,

@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from mystrips.models import LifePeriod
+from mystripes.models import LifePeriod
 
 
 def build_periods_from_entries(

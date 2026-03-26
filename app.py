@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from mystrips.cds import (
+from mystripes.cds import (
     CDSCredentialsMissingError,
     CDSRequestError,
     DEFAULT_CDSAPI_URL,
@@ -17,9 +17,9 @@ from mystrips.cds import (
     resolve_cds_config,
     save_local_cds_config,
 )
-from mystrips.geocoding import search_places
-from mystrips.models import CDSConfig
-from mystrips.notices import (
+from mystripes.geocoding import search_places
+from mystripes.models import CDSConfig
+from mystripes.notices import (
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
@@ -29,8 +29,8 @@ from mystrips.notices import (
     SOFTWARE_MIT_NOTICE,
     copernicus_credit_notice,
 )
-from mystrips.plotting import export_figure_bytes, render_stripes_figure
-from mystrips.processing import (
+from mystripes.plotting import export_figure_bytes, render_stripes_figure
+from mystripes.processing import (
     build_location_baseline_stripe_frame,
     build_periods_from_entries,
     build_stripe_frame,
@@ -41,7 +41,7 @@ from mystrips.processing import (
 )
 
 st.set_page_config(
-    page_title="MyStrips",
+    page_title="MyStripes",
     page_icon="||",
     layout="wide",
 )
@@ -62,7 +62,7 @@ def main() -> None:
     today = date.today()
     analysis_end = min(today, dataset_window.max_end)
 
-    st.title("MyStrips")
+    st.title("MyStripes")
     st.write(
         "Build climate strips from places and periods using ERA5-Land monthly temperature "
         "data. Use it as climate change signature of sufficiently long place-based "
@@ -167,7 +167,7 @@ def main() -> None:
     width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
-    file_stem = sidebar.text_input("Download name", value="mystrips")
+    file_stem = sidebar.text_input("Download name", value="mystripes")
 
     _render_credit_and_license_panel(today.year)
 

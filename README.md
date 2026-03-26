@@ -1,17 +1,19 @@
-# MyStrips
+# MyStripes
 
-MyStrips turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.
+![MyStripes preview](mystripes.png)
+
+MyStripes turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.
 
 The exported strips are intentionally lightweight, so they can be reused in email signatures, presentation decks, reports, posters, profile pages, and web embeds.
 
 ## Why this stack
 
 - `Streamlit` keeps the main UI simple enough for non-technical users and easy to deploy from GitHub.
-- `mystrips.api` exposes a small Python API for reusable scripts and notebooks.
+- `mystripes.api` exposes a small Python API for reusable scripts and notebooks.
 - `cdsapi` uses the official Copernicus Climate Data Store API flow for ERA5-Land downloads.
 - `matplotlib` gives exact export control for PNG, SVG, and PDF.
 
-## What MyStrips does
+## What MyStripes does
 
 - Accepts a flexible number of periods and places across one timeline.
 - Keeps the personal-life workflow easy, with labels and hints that fit birth, moves, study years, work phases, and current home.
@@ -63,7 +65,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
 
 ## Packaging
 
-This repository now includes [pyproject.toml](pyproject.toml) so the `mystrips` package can be built and published on PyPI.
+This repository now includes [pyproject.toml](pyproject.toml) so the `mystripes` package can be built and published on PyPI.
 
 Typical release steps:
 
@@ -78,10 +80,10 @@ python -m twine upload dist/*
 For scripts and notebooks, use `build_stripe_data(...)` to turn periods plus monthly temperature frames into a stripe-data bundle, then pass that bundle to `plot_stripes(...)` to render or save the figure.
 
 ```python
-from mystrips.api import build_stripe_data, plot_stripes
+from mystripes.api import build_stripe_data, plot_stripes
 
 stripe_data = build_stripe_data(periods=periods, period_data=monthly_frames)
-figure = plot_stripes(stripe_data, output_path="mystrips.svg")
+figure = plot_stripes(stripe_data, output_path="mystripes.svg")
 ```
 
 The first function accepts periods as dicts, lists, or pandas DataFrames, and monthly data as lists, dicts, or pandas DataFrames. The second function plots from the returned bundle and can save `PNG`, `SVG`, or `PDF`.
@@ -108,7 +110,7 @@ Why:
 
 Deployment steps:
 
-1. Push this repository to GitHub, ideally under a repo name such as `mystrips`.
+1. Push this repository to GitHub, ideally under a repo name such as `mystripes`.
 2. Create a new app in Streamlit Community Cloud and point it at `app.py`.
 3. Add `CDSAPI_KEY` and optional `CDSAPI_URL` in the app secrets.
 4. Redeploy.
@@ -155,7 +157,7 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 
 - The CDS operator must accept the dataset terms of use in their CDS account before the API key works.
 - Current CDS tokens are personal access tokens. They should be stored as the bare token string, not `user:token`.
-- Downloaded monthly series are cached under `.mystrips-cache/`, which is local-only and gitignored.
+- Downloaded monthly series are cached under `.mystripes-cache/`, which is local-only and gitignored.
 - The Nominatim public service is intended for low-volume use. If traffic grows, switch to a dedicated geocoding service or your own Nominatim instance.
 
 ## Credits and licenses

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from mystrips.api import build_stripe_data, plot_stripes
+from mystripes.api import build_stripe_data, plot_stripes
 
 
 class PublicAPITests(unittest.TestCase):
@@ -85,7 +85,7 @@ class PublicAPITests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "mystrips.svg"
+            output_path = Path(tmpdir) / "mystripes.svg"
             figure = plot_stripes(stripe_data, output_path=output_path, width_px=600, height_px=100, dpi=100)
 
             self.assertTrue(output_path.exists())

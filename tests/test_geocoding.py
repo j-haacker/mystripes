@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mystrips.geocoding import _result_from_payload
+from mystripes.geocoding import _result_from_payload
 
 
 class GeocodingTests(unittest.TestCase):

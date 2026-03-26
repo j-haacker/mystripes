@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import tomllib
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
@@ -18,6 +19,7 @@ FORM_URL = (
     f"{DATASET_NAME}/form.json"
 )
 DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
+LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
 
 
 class CDSCredentialsMissingError(RuntimeError):
@@ -43,18 +45,72 @@ def get_dataset_window() -> DatasetWindow:
     raise CDSRequestError("Could not determine the ERA5-Land date window from CDS.")
 
 
-def resolve_cds_config(secret_values: Mapping[str, str] | None = None) -> CDSConfig:
+def resolve_cds_config(
+    secret_values: Mapping[str, str] | None = None,
+    local_credentials_path: Path = LOCAL_CDS_CREDENTIALS_PATH,
+) -> CDSConfig:
     secret_values = secret_values or {}
 
-    url = os.getenv("CDSAPI_URL") or secret_values.get("CDSAPI_URL") or DEFAULT_CDSAPI_URL
-    key = os.getenv("CDSAPI_KEY") or secret_values.get("CDSAPI_KEY")
-    if not key:
-        raise CDSCredentialsMissingError(
-            "Missing CDSAPI_KEY. Add CDSAPI_KEY and optional CDSAPI_URL to Streamlit "
-            "secrets or environment variables."
-        )
+    secret_key = str(secret_values.get("CDSAPI_KEY", "")).strip()
+    if secret_key:
+        secret_url = str(secret_values.get("CDSAPI_URL", "")).strip() or DEFAULT_CDSAPI_URL
+        return CDSConfig(url=secret_url, key=secret_key, source="streamlit_secrets")
 
-    return CDSConfig(url=url, key=key)
+    env_key = os.getenv("CDSAPI_KEY", "").strip()
+    if env_key:
+        env_url = os.getenv("CDSAPI_URL", "").strip() or DEFAULT_CDSAPI_URL
+        return CDSConfig(url=env_url, key=env_key, source="environment")
+
+    local_config = load_local_cds_config(local_credentials_path)
+    if local_config is not None:
+        return local_config
+
+    raise CDSCredentialsMissingError(
+        "Missing CDSAPI_KEY. Add it to Streamlit secrets, environment variables, or save "
+        "it locally from the app sidebar."
+    )
+
+
+def load_local_cds_config(path: Path = LOCAL_CDS_CREDENTIALS_PATH) -> CDSConfig | None:
+    if not path.exists():
+        return None
+
+    with path.open("rb") as handle:
+        payload = tomllib.load(handle)
+
+    key = str(payload.get("CDSAPI_KEY", "")).strip()
+    if not key:
+        return None
+
+    url = str(payload.get("CDSAPI_URL", "")).strip() or DEFAULT_CDSAPI_URL
+    return CDSConfig(url=url, key=key, source="local_file")
+
+
+def save_local_cds_config(
+    key: str,
+    url: str = DEFAULT_CDSAPI_URL,
+    path: Path = LOCAL_CDS_CREDENTIALS_PATH,
+) -> None:
+    normalized_key = key.strip()
+    normalized_url = url.strip() or DEFAULT_CDSAPI_URL
+    if not normalized_key:
+        raise CDSCredentialsMissingError("A CDS API token is required before it can be saved.")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (
+        f'CDSAPI_URL = "{_escape_toml_string(normalized_url)}"\n'
+        f'CDSAPI_KEY = "{_escape_toml_string(normalized_key)}"\n'
+    )
+    path.write_text(payload, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except PermissionError:
+        pass
+
+
+def clear_local_cds_config(path: Path = LOCAL_CDS_CREDENTIALS_PATH) -> None:
+    if path.exists():
+        path.unlink()
 
 
 def fetch_point_temperature_series(
@@ -192,3 +248,7 @@ def _resolve_temperature_column(frame: pd.DataFrame) -> str:
             return column
 
     raise CDSRequestError("Could not identify the temperature column in the CDS CSV.")
+
+
+def _escape_toml_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

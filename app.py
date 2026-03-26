@@ -9,11 +9,16 @@ import streamlit as st
 from personal_warming_stripes.cds import (
     CDSCredentialsMissingError,
     CDSRequestError,
+    DEFAULT_CDSAPI_URL,
+    clear_local_cds_config,
     fetch_point_temperature_series,
     get_dataset_window,
+    load_local_cds_config,
     resolve_cds_config,
+    save_local_cds_config,
 )
 from personal_warming_stripes.geocoding import search_places
+from personal_warming_stripes.models import CDSConfig
 from personal_warming_stripes.plotting import export_figure_bytes, render_stripes_figure
 from personal_warming_stripes.processing import (
     build_periods_from_entries,
@@ -71,15 +76,10 @@ def main() -> None:
             f"`{dataset_window.max_end.isoformat()}`. The current period ends there."
         )
 
-    st.info(
-        "This app needs a Copernicus Climate Data Store account and API key configured as "
-        "`CDSAPI_KEY` in Streamlit secrets. The point data comes from the nearest ERA5-Land "
-        "grid cell, not an interpolated station value."
-    )
-
     _initialize_state(analysis_end)
 
     sidebar = st.sidebar
+    active_cds_config = _render_cds_access_panel(sidebar)
     sidebar.header("Output")
     birth_date = sidebar.date_input(
         "Birth date",
@@ -104,6 +104,18 @@ def main() -> None:
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
     transparent_background = sidebar.checkbox("Transparent background", value=False)
+
+    if active_cds_config is None:
+        st.info(
+            "This app needs a Copernicus Climate Data Store account and API key. Save a local "
+            "token from the sidebar for development, or configure `CDSAPI_KEY` in Streamlit "
+            "secrets for deployment."
+        )
+    else:
+        st.info(
+            f"Using CDS credentials from `{active_cds_config.source}`. The point data comes "
+            "from the nearest ERA5-Land grid cell, not an interpolated station value."
+        )
 
     controls = st.columns((1, 1, 2))
     if controls[0].button("Add period"):
@@ -231,10 +243,11 @@ def main() -> None:
     if not generate:
         return
 
-    try:
-        resolve_cds_config(st.secrets)
-    except CDSCredentialsMissingError as exc:
-        st.error(str(exc))
+    if active_cds_config is None:
+        st.error(
+            "Missing CDSAPI_KEY. Add it to Streamlit secrets, environment variables, or save "
+            "it locally from the app sidebar."
+        )
         return
 
     with st.spinner("Downloading ERA5-Land point series for your life periods..."):
@@ -355,6 +368,11 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.period_entries = [_blank_entry()]
     if "birth_date" not in st.session_state:
         st.session_state.birth_date = min(date(1990, 1, 1), analysis_end)
+    local_config = load_local_cds_config()
+    if "local_cds_url" not in st.session_state:
+        st.session_state.local_cds_url = local_config.url if local_config else DEFAULT_CDSAPI_URL
+    if "local_cds_key" not in st.session_state:
+        st.session_state.local_cds_key = local_config.key if local_config else ""
 
 
 def _blank_entry() -> dict[str, object]:
@@ -367,6 +385,65 @@ def _blank_entry() -> dict[str, object]:
         "coordinate_source": "",
         "end_date": None,
     }
+
+
+def _render_cds_access_panel(sidebar) -> CDSConfig | None:
+    try:
+        active_cds_config = resolve_cds_config(st.secrets)
+    except CDSCredentialsMissingError:
+        active_cds_config = None
+
+    with sidebar.expander("CDS access", expanded=active_cds_config is None):
+        if active_cds_config is None:
+            st.warning("No CDS credentials are configured yet.")
+        else:
+            st.success(f"Using `{active_cds_config.source}` for CDS access.")
+
+        if active_cds_config is not None and active_cds_config.source == "streamlit_secrets":
+            st.caption(
+                "This deployment is using Streamlit secrets. Locally saved credentials stay "
+                "ignored while those secrets are present."
+            )
+            return active_cds_config
+
+        st.text_input(
+            "Local CDS API URL",
+            key="local_cds_url",
+            help="Saved only in .streamlit/local_cds_credentials.toml.",
+        )
+        st.text_input(
+            "Local CDS API token",
+            key="local_cds_key",
+            type="password",
+            help="Saved locally only and excluded from git.",
+        )
+
+        action_columns = st.columns(2)
+        if action_columns[0].button("Save locally", key="save_local_cds"):
+            try:
+                save_local_cds_config(
+                    key=str(st.session_state.local_cds_key),
+                    url=str(st.session_state.local_cds_url),
+                )
+            except CDSCredentialsMissingError as exc:
+                st.error(str(exc))
+            else:
+                st.success("Saved local CDS credentials.")
+                st.rerun()
+
+        if action_columns[1].button("Clear local", key="clear_local_cds"):
+            clear_local_cds_config()
+            st.session_state.local_cds_url = DEFAULT_CDSAPI_URL
+            st.session_state.local_cds_key = ""
+            st.success("Removed locally saved CDS credentials.")
+            st.rerun()
+
+        st.caption(
+            "Local credentials are written to `.streamlit/local_cds_credentials.toml`, which "
+            "is gitignored."
+        )
+
+    return active_cds_config
 
 
 def _add_period_entry(analysis_end: date) -> None:

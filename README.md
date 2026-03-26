@@ -29,7 +29,12 @@ This app lets non-technical users create a warming-stripes graphic from their ow
    pip install -r requirements.txt
    ```
 
-2. Create `.streamlit/secrets.toml` from the example file:
+2. Choose one local credential option:
+
+   Option A: save a token from the app sidebar.
+   The app can store your CDS token in `.streamlit/local_cds_credentials.toml`, which is gitignored.
+
+   Option B: create `.streamlit/secrets.toml` from the example file:
 
    ```toml
    CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
@@ -58,6 +63,8 @@ Deployment steps:
 2. Create a new app in Streamlit Community Cloud and point it at `app.py`.
 3. Add `CDSAPI_KEY` and optional `CDSAPI_URL` in the app secrets.
 4. Redeploy.
+
+When Streamlit secrets are available, the app prefers them over any locally saved credential file.
 
 Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another free public host.
 

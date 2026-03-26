@@ -1,4 +1,5 @@
 __pycache__/
 .streamlit/secrets.toml
+.streamlit/local_cds_credentials.toml
 .pytest_cache/
 *.pyc

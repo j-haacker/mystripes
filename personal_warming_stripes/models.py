@@ -14,6 +14,7 @@ class DatasetWindow:
 class CDSConfig:
     url: str
     key: str
+    source: str = ""
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 import math
 import os
 import tempfile
@@ -25,6 +27,7 @@ CONSTRAINTS_URL = (
 )
 DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
 LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
+TEMPERATURE_CACHE_DIR = Path(".mystrips-cache")
 GRID_STEP_DEGREES = 0.1
 
 
@@ -120,11 +123,29 @@ def fetch_point_temperature_series(
     radius_km: float | None = None,
     boundary_geojson: Mapping[str, Any] | None = None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
+    cache_dir: Path | None = TEMPERATURE_CACHE_DIR,
 ) -> pd.DataFrame:
     if start_date > end_date:
         raise ValueError("Start date must be on or before end date.")
     if spatial_mode == "radius" and radius_km is not None and radius_km <= 0:
         raise ValueError("Radius must be greater than zero.")
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _temperature_series_cache_path(
+            cache_dir=cache_dir,
+            latitude=latitude,
+            longitude=longitude,
+            start_date=start_date,
+            end_date=end_date,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+        )
+        cached_frame = _load_cached_temperature_series(cache_path)
+        if cached_frame is not None:
+            return cached_frame
 
     try:
         import cdsapi
@@ -182,7 +203,10 @@ def fetch_point_temperature_series(
         raise CDSRequestError("ERA5-Land CDS request returned no monthly data.")
 
     combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
-    return combined.reset_index(drop=True)
+    combined = combined.reset_index(drop=True)
+    if cache_path is not None:
+        _store_cached_temperature_series(cache_path, combined)
+    return combined
 
 
 def parse_temperature_file(
@@ -328,6 +352,64 @@ def _build_monthly_requests(
         )
 
     return requests_to_run
+
+
+def _temperature_series_cache_path(
+    cache_dir: Path,
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+    boundary_geojson: Mapping[str, Any] | None,
+    boundary_bbox: tuple[float, float, float, float] | None,
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "dataset": DATASET_NAME,
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "spatial_mode": spatial_mode,
+        "radius_km": None if radius_km is None else round(radius_km, 6),
+        "boundary_geojson": boundary_geojson,
+        "boundary_bbox": list(boundary_bbox) if boundary_bbox is not None else None,
+    }
+    key = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / f"{key}.csv"
+
+
+def _load_cached_temperature_series(cache_path: Path) -> pd.DataFrame | None:
+    if not cache_path.exists():
+        return None
+
+    try:
+        frame = pd.read_csv(cache_path)
+    except Exception:
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    required_columns = {"timestamp", "temperature_c", "sample_days"}
+    if not required_columns.issubset(frame.columns):
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    return frame.sort_values("timestamp").reset_index(drop=True)
+
+
+def _store_cached_temperature_series(cache_path: Path, frame: pd.DataFrame) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = frame.copy()
+    payload["timestamp"] = pd.to_datetime(payload["timestamp"], utc=True)
+
+    temporary_path = cache_path.with_suffix(".tmp")
+    payload.to_csv(temporary_path, index=False)
+    temporary_path.replace(cache_path)
 
 
 def _monthly_request_payload(

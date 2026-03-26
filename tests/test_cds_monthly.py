@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -12,8 +14,10 @@ from mystrips.cds import (
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,
     _request_area,
+    fetch_point_temperature_series,
     parse_temperature_file,
 )
+from mystrips.models import CDSConfig
 
 
 class MonthlyCDSTests(unittest.TestCase):
@@ -121,6 +125,56 @@ class MonthlyCDSTests(unittest.TestCase):
                 parse_temperature_file(path, target_latitude=0.0, target_longitude=0.0)
 
         self.assertIn("binary file", str(context.exception))
+
+    def test_fetch_point_temperature_series_reuses_cached_response(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class FakeClient:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+
+            def retrieve(self, dataset_name: str, request: dict[str, object], target: str) -> None:
+                calls.append((dataset_name, request))
+                Path(target).write_bytes(b"CDF")
+
+        aggregated = pd.DataFrame(
+            {
+                "timestamp": [
+                    pd.Timestamp("2020-01-01T00:00:00Z"),
+                    pd.Timestamp("2020-02-01T00:00:00Z"),
+                ],
+                "temperature_c": [1.5, 2.5],
+                "sample_days": [31, 29],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            fake_cdsapi = SimpleNamespace(Client=FakeClient)
+
+            with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
+                with patch("mystrips.cds.parse_temperature_file", return_value=pd.DataFrame()):
+                    with patch("mystrips.cds._aggregate_spatial_selection", return_value=aggregated):
+                        first = fetch_point_temperature_series(
+                            config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                            latitude=48.2082,
+                            longitude=16.3738,
+                            start_date=date(2020, 1, 1),
+                            end_date=date(2020, 2, 29),
+                            cache_dir=cache_dir,
+                        )
+                        second = fetch_point_temperature_series(
+                            config=CDSConfig(url="https://example.invalid/api", key="different-token"),
+                            latitude=48.2082,
+                            longitude=16.3738,
+                            start_date=date(2020, 1, 1),
+                            end_date=date(2020, 2, 29),
+                            cache_dir=cache_dir,
+                        )
+
+        self.assertEqual(len(calls), 1)
+        pd.testing.assert_frame_equal(first, aggregated)
+        pd.testing.assert_frame_equal(second, aggregated)
 
 
 if __name__ == "__main__":

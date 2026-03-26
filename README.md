@@ -26,6 +26,7 @@ The exported strips are intentionally lightweight, so they can be reused in emai
   - the average over the timeline shown, or
   - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place used at that time.
 - Supports location-specific reference periods of `1961-2010`, the timeline's own lifetime window, or a custom date range.
+- Caches identical ERA5-Land download requests locally, so regenerating the same strips reuses prior monthly data instead of calling CDS again.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
 - Includes a small Python API for preparing stripe data and plotting or saving the result.
 
@@ -154,6 +155,7 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 
 - The CDS operator must accept the dataset terms of use in their CDS account before the API key works.
 - Current CDS tokens are personal access tokens. They should be stored as the bare token string, not `user:token`.
+- Downloaded monthly series are cached under `.mystrips-cache/`, which is local-only and gitignored.
 - The Nominatim public service is intended for low-volume use. If traffic grows, switch to a dedicated geocoding service or your own Nominatim instance.
 
 ## Credits and licenses

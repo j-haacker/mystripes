@@ -81,23 +81,30 @@ def combine_period_frames(
     frames_by_period: list[pd.DataFrame],
     aggregation_mode: str = "full_calendar_years",
     rolling_window_end: date | None = None,
+    rolling_crop_start: date | None = None,
     rolling_sample_mode: str = "monthly",
     rolling_strip_count: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     combined_frames: list[pd.DataFrame] = []
-    for period, frame in zip(periods, frames_by_period, strict=True):
+    effective_rolling_crop_start = rolling_crop_start or min(period.start_date for period in periods)
+
+    for index, (period, frame) in enumerate(zip(periods, frames_by_period, strict=True)):
+        effective_period_start = period.start_date
+        if aggregation_mode == "rolling_365_day" and index == 0:
+            effective_period_start = period.start_date - timedelta(days=364)
+
         local_frame = frame.copy()
         local_frame["sample_start_date"] = local_frame["timestamp"].dt.date.map(_sample_start_date)
         local_frame["sample_end_date"] = local_frame["timestamp"].dt.date.map(_sample_end_date)
         local_frame["covered_start_date"] = local_frame["sample_start_date"].map(
-            lambda sample_start: max(period.start_date, sample_start)
+            lambda sample_start: max(effective_period_start, sample_start)
         )
         local_frame["covered_end_date"] = local_frame["sample_end_date"].map(
             lambda sample_end: min(period.end_date, sample_end)
         )
         local_frame["overlap_days"] = local_frame.apply(
             lambda row: _overlap_days(
-                period.start_date,
+                effective_period_start,
                 period.end_date,
                 row["sample_start_date"],
                 row["sample_end_date"],
@@ -122,6 +129,7 @@ def combine_period_frames(
         yearly = _aggregate_rolling_365_day_windows(
             combined,
             effective_window_end,
+            rolling_crop_start=effective_rolling_crop_start,
             rolling_sample_mode=rolling_sample_mode,
             rolling_strip_count=rolling_strip_count,
         )
@@ -143,6 +151,7 @@ def build_location_baseline_stripe_frame(
     baseline_by_location: dict[str, float],
     aggregation_mode: str = "full_calendar_years",
     rolling_window_end: date | None = None,
+    rolling_crop_start: date | None = None,
     rolling_sample_mode: str = "monthly",
     rolling_strip_count: int | None = None,
 ) -> pd.DataFrame:
@@ -172,6 +181,7 @@ def build_location_baseline_stripe_frame(
         return _aggregate_rolling_365_day_windows_with_location_baseline(
             stripe_source,
             effective_window_end,
+            rolling_crop_start=rolling_crop_start or min(stripe_source["covered_start_date"]),
             rolling_sample_mode=rolling_sample_mode,
             rolling_strip_count=rolling_strip_count,
         )
@@ -327,12 +337,14 @@ def _aggregate_full_calendar_years_with_location_baseline(combined: pd.DataFrame
 def _aggregate_rolling_365_day_windows(
     combined: pd.DataFrame,
     rolling_window_end: date,
+    rolling_crop_start: date,
     rolling_sample_mode: str = "monthly",
     rolling_strip_count: int | None = None,
 ) -> pd.DataFrame:
     return _aggregate_rolling_daily_series(
         combined,
         rolling_window_end,
+        rolling_crop_start=rolling_crop_start,
         rolling_sample_mode=rolling_sample_mode,
         rolling_strip_count=rolling_strip_count,
         include_location_baseline=False,
@@ -342,12 +354,14 @@ def _aggregate_rolling_365_day_windows(
 def _aggregate_rolling_365_day_windows_with_location_baseline(
     combined: pd.DataFrame,
     rolling_window_end: date,
+    rolling_crop_start: date,
     rolling_sample_mode: str = "monthly",
     rolling_strip_count: int | None = None,
 ) -> pd.DataFrame:
     return _aggregate_rolling_daily_series(
         combined,
         rolling_window_end,
+        rolling_crop_start=rolling_crop_start,
         rolling_sample_mode=rolling_sample_mode,
         rolling_strip_count=rolling_strip_count,
         include_location_baseline=True,
@@ -357,6 +371,7 @@ def _aggregate_rolling_365_day_windows_with_location_baseline(
 def _aggregate_rolling_daily_series(
     combined: pd.DataFrame,
     rolling_window_end: date,
+    rolling_crop_start: date,
     rolling_sample_mode: str,
     rolling_strip_count: int | None,
     include_location_baseline: bool,
@@ -388,6 +403,7 @@ def _aggregate_rolling_daily_series(
         daily["anomaly_c"] = daily["mean_temp_c"] - daily["baseline_c"]
 
     valid = daily.loc[daily["mean_temp_c"].notna()].copy()
+    valid = valid.loc[valid["daily_date"].dt.date >= rolling_crop_start].copy()
     sampled = _sample_rolling_daily_frame(
         valid,
         rolling_sample_mode=rolling_sample_mode,
@@ -516,4 +532,3 @@ def _overlap_days(
 
 def _days_in_year(year: int) -> int:
     return 366 if calendar.isleap(year) else 365
-

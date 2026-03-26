@@ -338,25 +338,32 @@ def main() -> None:
 
     with st.spinner("Downloading ERA5-Land monthly data for your selected periods..."):
         try:
+            rolling_crop_start = min(period.start_date for period in periods_preview)
             period_frames = [
                 fetch_point_temperature_series(
                     config=active_cds_config,
                     latitude=period.latitude,
                     longitude=period.longitude,
-                    start_date=period.start_date,
+                    start_date=max(
+                        dataset_window.min_start,
+                        period.start_date - timedelta(days=364),
+                    )
+                    if aggregation_mode == "rolling_365_day" and index == 0
+                    else period.start_date,
                     end_date=period.end_date,
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
                     boundary_geojson=period.boundary_geojson,
                     boundary_bbox=period.bounding_box,
                 )
-                for period in periods_preview
+                for index, period in enumerate(periods_preview)
             ]
             combined, yearly = combine_period_frames(
                 periods_preview,
                 period_frames,
                 aggregation_mode=aggregation_mode,
                 rolling_window_end=analysis_end,
+                rolling_crop_start=rolling_crop_start,
                 rolling_sample_mode=rolling_sample_mode,
                 rolling_strip_count=rolling_strip_count,
             )
@@ -408,6 +415,7 @@ def main() -> None:
                     baseline_by_location=baseline_by_location,
                     aggregation_mode=aggregation_mode,
                     rolling_window_end=analysis_end,
+                    rolling_crop_start=rolling_crop_start,
                     rolling_sample_mode=rolling_sample_mode,
                     rolling_strip_count=rolling_strip_count,
                 )

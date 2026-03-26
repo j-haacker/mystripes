@@ -150,7 +150,7 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 - Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
 - Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
 - Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
-- Full-calendar-year mode omits partial first and current years. The 365-day moving-average mode expands monthly values to daily coverage, applies a daily rolling mean, and samples the smoothed series monthly or at an evenly spaced fixed count.
+- Full-calendar-year mode omits partial first and current years. The 365-day moving-average mode expands monthly values to daily coverage, applies a daily rolling mean, and samples the smoothed series monthly or at an evenly spaced fixed count. When prior data is available, the app keeps up to one year before the displayed start date for the rolling calculation and crops only after smoothing.
 - If the timeline starts before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
 ## Operational notes

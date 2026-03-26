@@ -53,12 +53,14 @@ def build_stripe_data(
     effective_window_end = _coerce_optional_date(rolling_window_end) or max(
         period.end_date for period in normalized_periods
     )
+    effective_rolling_crop_start = min(period.start_date for period in normalized_periods)
 
     combined, yearly = combine_period_frames(
         normalized_periods,
         normalized_frames,
         aggregation_mode=aggregation_mode,
         rolling_window_end=effective_window_end,
+        rolling_crop_start=effective_rolling_crop_start,
         rolling_sample_mode=rolling_sample_mode,
         rolling_strip_count=rolling_strip_count,
     )
@@ -103,6 +105,7 @@ def build_stripe_data(
         baseline_by_location=normalized_baseline_by_location,
         aggregation_mode=aggregation_mode,
         rolling_window_end=effective_window_end,
+        rolling_crop_start=effective_rolling_crop_start,
         rolling_sample_mode=rolling_sample_mode,
         rolling_strip_count=rolling_strip_count,
     )

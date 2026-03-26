@@ -156,6 +156,37 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue((yearly["days_covered"] == 365).all())
         self.assertTrue((yearly["mean_temp_c"].round(2) == 10.0).all())
 
+    def test_rolling_moving_average_keeps_prior_year_until_after_roll(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 3, 31),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        timestamps = pd.date_range("2019-01-01", "2020-03-01", freq="MS", tz="UTC")
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "temperature_c": [10.0] * len(timestamps),
+            }
+        )
+
+        _, yearly = combine_period_frames(
+            periods,
+            [frame],
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2020, 3, 31),
+        )
+
+        self.assertEqual(yearly["sample_date"].tolist(), [date(2020, 1, 31), date(2020, 2, 29), date(2020, 3, 31)])
+        self.assertEqual(yearly["window_start"].tolist()[0], date(2019, 2, 1))
+        self.assertTrue((yearly["mean_temp_c"].round(2) == 10.0).all())
+
     def test_rolling_moving_average_can_use_fixed_strip_count(self) -> None:
         periods = [
             LifePeriod(
@@ -300,6 +331,43 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(len(stripe_frame), 3)
         self.assertEqual(stripe_frame["sample_date"].tolist()[0], date(2020, 12, 30))
         self.assertEqual(stripe_frame["sample_date"].tolist()[-1], date(2021, 6, 30))
+        self.assertTrue((stripe_frame["baseline_c"].round(2) == 10.0).all())
+        self.assertTrue((stripe_frame["anomaly_c"].round(2) == 1.0).all())
+
+    def test_location_specific_rolling_crop_happens_after_prestart_history(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 3, 31),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        frame = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2019-01-01", "2020-03-01", freq="MS", tz="UTC"),
+                "temperature_c": [11.0] * 15,
+            }
+        )
+
+        combined, _ = combine_period_frames(
+            periods,
+            [frame],
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2020, 3, 31),
+        )
+        stripe_frame = build_location_baseline_stripe_frame(
+            combined=combined,
+            baseline_by_location={periods[0].location_key: 10.0},
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2020, 3, 31),
+            rolling_crop_start=date(2020, 1, 1),
+        )
+
+        self.assertEqual(stripe_frame["sample_date"].tolist(), [date(2020, 1, 31), date(2020, 2, 29), date(2020, 3, 31)])
         self.assertTrue((stripe_frame["baseline_c"].round(2) == 10.0).all())
         self.assertTrue((stripe_frame["anomaly_c"].round(2) == 1.0).all())
 

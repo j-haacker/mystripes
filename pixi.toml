@@ -1,0 +1,20 @@
+[workspace]
+name = "personal-warming-stripes"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+version = "0.1.0"
+
+[tasks]
+start = "streamlit run app.py"
+test = "python -m unittest discover -s tests"
+
+[dependencies]
+python = "3.12.*"
+
+[pypi-dependencies]
+cdsapi = ">=0.7.7,<0.8"
+matplotlib = ">=3.8,<4"
+numpy = ">=1.26,<3"
+pandas = ">=2.2,<3"
+requests = ">=2.32,<3"
+streamlit = ">=1.40,<2"

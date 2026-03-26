@@ -19,6 +19,14 @@ from personal_warming_stripes.cds import (
 )
 from personal_warming_stripes.geocoding import search_places
 from personal_warming_stripes.models import CDSConfig
+from personal_warming_stripes.notices import (
+    ERA5_LAND_REFERENCE_CITATION,
+    ERA5_LAND_TIMESERIES_DATASET_NAME,
+    ERA5_LAND_TIMESERIES_DATASET_URL,
+    GENERATED_GRAPHICS_CC0_NOTICE,
+    SOFTWARE_MIT_NOTICE,
+    copernicus_credit_notice,
+)
 from personal_warming_stripes.plotting import export_figure_bytes, render_stripes_figure
 from personal_warming_stripes.processing import (
     build_periods_from_entries,
@@ -116,6 +124,7 @@ def main() -> None:
             f"Using CDS credentials from `{active_cds_config.source}`. The point data comes "
             "from the nearest ERA5-Land grid cell, not an interpolated station value."
         )
+    _render_credit_and_license_panel(today.year)
 
     controls = st.columns((1, 1, 2))
     if controls[0].button("Add period"):
@@ -332,6 +341,7 @@ def main() -> None:
         file_name=f"{file_stem}.pdf",
         mime="application/pdf",
     )
+    st.caption(GENERATED_GRAPHICS_CC0_NOTICE)
 
     details_tab, yearly_tab = st.tabs(("Periods", "Annual values"))
     with details_tab:
@@ -444,6 +454,18 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
         )
 
     return active_cds_config
+
+
+def _render_credit_and_license_panel(current_year: int) -> None:
+    with st.expander("Credits and licenses", expanded=False):
+        st.markdown(
+            f"- Climate data access: `{ERA5_LAND_TIMESERIES_DATASET_NAME}`\n"
+            f"- Dataset page: {ERA5_LAND_TIMESERIES_DATASET_URL}\n"
+            f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
+            f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
+            f"- Generated graphics: {GENERATED_GRAPHICS_CC0_NOTICE}\n"
+            f"- Software: {SOFTWARE_MIT_NOTICE}"
+        )
 
 
 def _add_period_entry(analysis_end: date) -> None:

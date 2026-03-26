@@ -20,6 +20,7 @@ This app lets non-technical users create a warming-stripes graphic from their ow
   - a weighted 1961-2010 baseline across the locations they lived in.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
 - Lets the operator adjust width, height, and PNG DPI.
+- Shows a CDS credit notice and a licensing note for both the exported graphics and the software.
 
 ## Local run
 
@@ -46,6 +47,20 @@ This app lets non-technical users create a warming-stripes graphic from their ow
    ```bash
    streamlit run app.py
    ```
+
+### Pixi
+
+If you use Pixi, this repository includes [pixi.toml](pixi.toml) with a ready-to-run task:
+
+```bash
+pixi run start
+```
+
+Useful shortcut:
+
+```bash
+pixi run test
+```
 
 ## Deployment
 
@@ -80,3 +95,10 @@ Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another fr
 
 - The CDS operator must accept the dataset terms of use in their CDS account before the API key works.
 - The Nominatim public service is intended for low-volume use. If traffic grows, switch to a dedicated geocoding service or your own Nominatim instance.
+
+## Credits and licenses
+
+- The app includes a CDS credit notice based on the Copernicus / ECMWF attribution guidance.
+- See [NOTICE.md](NOTICE.md) for the project data credit notice and dataset references.
+- The software is licensed under [LICENSE](LICENSE).
+- The generated graphic composition is offered under [LICENSE-graphics-CC0.md](LICENSE-graphics-CC0.md), with the important caveat that ERA5-Land / Copernicus source-data attribution still applies.

@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from io import BytesIO
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+
+STRIPES_COLORS = [
+    "#08306b",
+    "#2171b5",
+    "#6baed6",
+    "#c6dbef",
+    "#f7f7f7",
+    "#fcbba1",
+    "#fb6a4a",
+    "#cb181d",
+    "#67000d",
+]
+
+
+def render_stripes_figure(
+    anomalies: list[float],
+    width_inches: float,
+    height_inches: float,
+    transparent_background: bool,
+) -> plt.Figure:
+    if not anomalies:
+        raise ValueError("At least one yearly anomaly is required to render stripes.")
+
+    values = np.array([anomalies], dtype=float)
+    color_limit = max(float(np.max(np.abs(values))), 0.25)
+
+    figure, axis = plt.subplots(
+        figsize=(width_inches, height_inches),
+        dpi=100,
+        facecolor="none" if transparent_background else "white",
+    )
+    axis.imshow(
+        values,
+        aspect="auto",
+        cmap=LinearSegmentedColormap.from_list("warming_stripes", STRIPES_COLORS),
+        interpolation="nearest",
+        vmin=-color_limit,
+        vmax=color_limit,
+    )
+    axis.set_axis_off()
+    figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    return figure
+
+
+def export_figure_bytes(
+    figure: plt.Figure,
+    fmt: str,
+    png_dpi: int,
+    transparent_background: bool,
+) -> bytes:
+    buffer = BytesIO()
+    save_kwargs: dict[str, object] = {"format": fmt, "transparent": transparent_background}
+    if fmt == "png":
+        save_kwargs["dpi"] = png_dpi
+    figure.savefig(buffer, **save_kwargs)
+    return buffer.getvalue()

@@ -1,0 +1,6 @@
+cdsapi>=0.7.7
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.2
+requests>=2.32
+streamlit>=1.40

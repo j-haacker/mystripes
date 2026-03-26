@@ -92,14 +92,51 @@ def main() -> None:
         "Baseline",
         options=(
             "Life-period mean",
-            "Location-specific 1961-2010 climate normal",
+            "Location-specific reference period",
         ),
         help=(
-            "The location-specific 1961-2010 option makes extra ERA5-Land requests for "
-            "each unique location and computes each month's anomaly relative to that "
-            "location's own 1961-2010 baseline."
+            "The location-specific option makes extra ERA5-Land requests for each unique "
+            "location and computes each month's anomaly relative to that location's own "
+            "reference-period baseline."
         ),
     )
+    location_reference_mode = None
+    custom_reference_start = None
+    custom_reference_end = None
+    if baseline_mode == "Location-specific reference period":
+        location_reference_mode = sidebar.selectbox(
+            "Reference period",
+            options=(
+                "1961-2010 climate normal",
+                "Lifetime period",
+                "Custom",
+            ),
+            help=(
+                "Choose which period should define the local baseline for each location. "
+                "Lifetime period uses your full available timeline, clipped to the ERA5-Land "
+                "dataset window."
+            ),
+        )
+        if location_reference_mode == "Custom":
+            default_reference_start = max(dataset_window.min_start, date(1961, 1, 1))
+            default_reference_end = min(analysis_end, date(1990, 12, 31))
+            if default_reference_end < default_reference_start:
+                default_reference_end = default_reference_start
+
+            custom_reference_start = sidebar.date_input(
+                "Reference start",
+                value=default_reference_start,
+                min_value=dataset_window.min_start,
+                max_value=analysis_end,
+                key="custom_reference_start",
+            )
+            custom_reference_end = sidebar.date_input(
+                "Reference end",
+                value=max(custom_reference_start, default_reference_end),
+                min_value=custom_reference_start,
+                max_value=analysis_end,
+                key="custom_reference_end",
+            )
     aggregation_mode = sidebar.selectbox(
         "Stripe period",
         options=("full_calendar_years", "rolling_365_day"),
@@ -324,7 +361,21 @@ def main() -> None:
         baseline_metric_value = f"{baseline_c:.2f} C"
         stripe_frame = build_stripe_frame(yearly, baseline_c)
     else:
-        with st.spinner("Calculating location-specific 1961-2010 baselines..."):
+        reference_start, reference_end, reference_label = _resolve_location_reference_period(
+            reference_mode=location_reference_mode or "1961-2010 climate normal",
+            analysis_start=max(birth_date, dataset_window.min_start),
+            analysis_end=analysis_end,
+            custom_start=custom_reference_start,
+            custom_end=custom_reference_end,
+        )
+        baseline_label = (
+            "Location-specific reference period "
+            f"({reference_start.isoformat()} to {reference_end.isoformat()})"
+        )
+        with st.spinner(
+            "Calculating location-specific baselines for "
+            f"{reference_start.isoformat()} to {reference_end.isoformat()}..."
+        ):
             try:
                 baseline_by_location: dict[str, float] = {}
                 periods_by_location = {period.location_key: period for period in periods_preview}
@@ -334,8 +385,8 @@ def main() -> None:
                         config=active_cds_config,
                         latitude=latitude,
                         longitude=longitude,
-                        start_date=date(1961, 1, 1),
-                        end_date=date(2010, 12, 31),
+                        start_date=reference_start,
+                        end_date=reference_end,
                         spatial_mode=spatial_mode,
                         radius_km=radius_km,
                         boundary_geojson=period.boundary_geojson,
@@ -348,7 +399,7 @@ def main() -> None:
                     aggregation_mode=aggregation_mode,
                     rolling_window_end=analysis_end,
                 )
-                baseline_metric_value = "Per-location"
+                baseline_metric_value = reference_label
             except (CDSRequestError, ValueError) as exc:
                 st.error(str(exc))
                 return
@@ -674,6 +725,29 @@ def _boundary_mode_caption(entry: dict[str, object]) -> str:
         return "Boundary mode will fall back to the geocoder area extent because no polygon boundary was returned."
 
     return "Boundary mode needs a geocoder result with an area boundary or area extent."
+
+
+def _resolve_location_reference_period(
+    reference_mode: str,
+    analysis_start: date,
+    analysis_end: date,
+    custom_start: date | None,
+    custom_end: date | None,
+) -> tuple[date, date, str]:
+    if reference_mode == "1961-2010 climate normal":
+        return date(1961, 1, 1), date(2010, 12, 31), "1961-2010"
+
+    if reference_mode == "Lifetime period":
+        return analysis_start, analysis_end, "Lifetime"
+
+    if reference_mode == "Custom":
+        if custom_start is None or custom_end is None:
+            raise ValueError("A custom reference period needs both a start and an end date.")
+        if custom_start > custom_end:
+            raise ValueError("The custom reference period start date must be on or before the end date.")
+        return custom_start, custom_end, "Custom"
+
+    raise ValueError(f"Unsupported reference period mode: {reference_mode}")
 
 
 def _aggregation_mode_caption(baseline_label: str, aggregation_mode: str, analysis_end: date) -> str:

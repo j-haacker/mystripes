@@ -20,7 +20,8 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 - Offers full calendar years only as the default stripe period, or trailing 365-day windows ending on the latest available month-day in each year.
 - Colors each year as a warming stripe against either:
   - the average over the user's own life-period series, or
-  - a location-specific 1961-2010 baseline, so each part of the timeline is compared to the normal climate of the place lived in at that time.
+  - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place lived in at that time.
+- Supports location-specific reference periods of `1961-2010`, the person's own lifetime window, or a custom date range.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
 - Lets the operator adjust width, height, and PNG DPI.
 - Shows a CDS credit notice and a licensing note for both the exported graphics and the software.

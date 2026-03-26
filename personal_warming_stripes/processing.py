@@ -105,6 +105,7 @@ def combine_period_frames(
         local_frame = local_frame.loc[local_frame["overlap_days"] > 0].copy()
         local_frame["period_label"] = period.label
         local_frame["place_name"] = period.display_name
+        local_frame["location_key"] = period.location_key
         local_frame["weighted_temp_sum"] = local_frame["temperature_c"] * local_frame["overlap_days"]
         combined_frames.append(local_frame)
 
@@ -128,6 +129,43 @@ def build_stripe_frame(yearly: pd.DataFrame, baseline_c: float) -> pd.DataFrame:
     stripe_frame["baseline_c"] = baseline_c
     stripe_frame["anomaly_c"] = stripe_frame["mean_temp_c"] - baseline_c
     return stripe_frame
+
+
+def build_location_baseline_stripe_frame(
+    combined: pd.DataFrame,
+    baseline_by_location: dict[str, float],
+    aggregation_mode: str = "full_calendar_years",
+    rolling_window_end: date | None = None,
+) -> pd.DataFrame:
+    stripe_source = combined.copy()
+    stripe_source["baseline_c"] = stripe_source["location_key"].map(baseline_by_location)
+
+    missing_locations = sorted(
+        {
+            str(location_key)
+            for location_key in stripe_source.loc[stripe_source["baseline_c"].isna(), "location_key"].unique()
+        }
+    )
+    if missing_locations:
+        raise ValueError(
+            "Missing location baselines for: " + ", ".join(missing_locations)
+        )
+
+    stripe_source["weighted_baseline_sum"] = stripe_source["baseline_c"] * stripe_source["overlap_days"]
+    stripe_source["weighted_anomaly_sum"] = (
+        (stripe_source["temperature_c"] - stripe_source["baseline_c"]) * stripe_source["overlap_days"]
+    )
+
+    if aggregation_mode == "full_calendar_years":
+        return _aggregate_full_calendar_years_with_location_baseline(stripe_source)
+    if aggregation_mode == "rolling_365_day":
+        effective_window_end = rolling_window_end or max(stripe_source["covered_end_date"])
+        return _aggregate_rolling_365_day_windows_with_location_baseline(
+            stripe_source,
+            effective_window_end,
+        )
+
+    raise ValueError(f"Unsupported aggregation mode: {aggregation_mode}")
 
 
 def calculate_life_period_baseline(yearly: pd.DataFrame) -> float:
@@ -230,6 +268,39 @@ def _aggregate_full_calendar_years(combined: pd.DataFrame) -> pd.DataFrame:
     return yearly[["year", "window_start", "window_end", "mean_temp_c", "days_covered", "months_covered"]]
 
 
+def _aggregate_full_calendar_years_with_location_baseline(combined: pd.DataFrame) -> pd.DataFrame:
+    combined = combined.copy()
+    combined["year"] = combined["timestamp"].dt.year
+
+    yearly = (
+        combined.groupby("year", as_index=False)
+        .agg(
+            weighted_temp_sum=("weighted_temp_sum", "sum"),
+            weighted_baseline_sum=("weighted_baseline_sum", "sum"),
+            weighted_anomaly_sum=("weighted_anomaly_sum", "sum"),
+            days_covered=("overlap_days", "sum"),
+            months_covered=("timestamp", "size"),
+        )
+        .sort_values("year")
+        .reset_index(drop=True)
+    )
+    yearly["window_start"] = yearly["year"].map(lambda year: date(year, 1, 1))
+    yearly["window_end"] = yearly["year"].map(lambda year: date(year, 12, 31))
+    yearly["expected_days"] = yearly["year"].map(_days_in_year)
+    yearly = yearly.loc[yearly["days_covered"] == yearly["expected_days"]].copy()
+    if yearly.empty:
+        raise ValueError(
+            "No complete calendar years are available for the selected period. "
+            "Try the rolling 365-day window mode instead."
+        )
+    yearly["mean_temp_c"] = yearly["weighted_temp_sum"] / yearly["days_covered"]
+    yearly["baseline_c"] = yearly["weighted_baseline_sum"] / yearly["days_covered"]
+    yearly["anomaly_c"] = yearly["weighted_anomaly_sum"] / yearly["days_covered"]
+    return yearly[
+        ["year", "window_start", "window_end", "mean_temp_c", "baseline_c", "anomaly_c", "days_covered", "months_covered"]
+    ]
+
+
 def _aggregate_rolling_365_day_windows(
     combined: pd.DataFrame,
     rolling_window_end: date,
@@ -275,6 +346,81 @@ def _aggregate_rolling_365_day_windows(
                     "window_start": window_start,
                     "window_end": current_window_end,
                     "mean_temp_c": weighted_temp_sum / days_covered,
+                    "days_covered": days_covered,
+                    "months_covered": int(overlapping["timestamp"].nunique()),
+                }
+            )
+
+        next_window_end = _shift_year(current_window_end, -1)
+        if next_window_end >= current_window_end:
+            break
+        current_window_end = next_window_end
+
+    if not records:
+        raise ValueError(
+            "No complete 365-day windows are available for the selected period. "
+            "Try full calendar years instead."
+        )
+
+    return pd.DataFrame.from_records(records).sort_values("window_end").reset_index(drop=True)
+
+
+def _aggregate_rolling_365_day_windows_with_location_baseline(
+    combined: pd.DataFrame,
+    rolling_window_end: date,
+) -> pd.DataFrame:
+    coverage_start = min(combined["covered_start_date"])
+    coverage_end = max(combined["covered_end_date"])
+    effective_window_end = min(rolling_window_end, coverage_end)
+    earliest_complete_end = coverage_start + timedelta(days=364)
+
+    if effective_window_end < earliest_complete_end:
+        raise ValueError(
+            "No complete 365-day window is available for the selected period. "
+            "Try a longer date range or use full calendar years."
+        )
+
+    records: list[dict[str, object]] = []
+    current_window_end = effective_window_end
+    while current_window_end >= earliest_complete_end:
+        window_start = current_window_end - timedelta(days=364)
+        overlapping = combined.loc[
+            (combined["covered_end_date"] >= window_start)
+            & (combined["covered_start_date"] <= current_window_end)
+        ].copy()
+        overlapping["window_overlap_days"] = overlapping.apply(
+            lambda row: _overlap_days(
+                window_start,
+                current_window_end,
+                row["covered_start_date"],
+                row["covered_end_date"],
+            ),
+            axis=1,
+        )
+        overlapping = overlapping.loc[overlapping["window_overlap_days"] > 0]
+
+        days_covered = int(overlapping["window_overlap_days"].sum())
+        if days_covered == 365:
+            weighted_temp_sum = float(
+                (overlapping["temperature_c"] * overlapping["window_overlap_days"]).sum()
+            )
+            weighted_baseline_sum = float(
+                (overlapping["baseline_c"] * overlapping["window_overlap_days"]).sum()
+            )
+            weighted_anomaly_sum = float(
+                (
+                    (overlapping["temperature_c"] - overlapping["baseline_c"])
+                    * overlapping["window_overlap_days"]
+                ).sum()
+            )
+            records.append(
+                {
+                    "year": current_window_end.year,
+                    "window_start": window_start,
+                    "window_end": current_window_end,
+                    "mean_temp_c": weighted_temp_sum / days_covered,
+                    "baseline_c": weighted_baseline_sum / days_covered,
+                    "anomaly_c": weighted_anomaly_sum / days_covered,
                     "days_covered": days_covered,
                     "months_covered": int(overlapping["timestamp"].nunique()),
                 }

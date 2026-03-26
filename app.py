@@ -31,11 +31,11 @@ from personal_warming_stripes.notices import (
 )
 from personal_warming_stripes.plotting import export_figure_bytes, render_stripes_figure
 from personal_warming_stripes.processing import (
+    build_location_baseline_stripe_frame,
     build_periods_from_entries,
     build_stripe_frame,
     calculate_series_mean_temperature,
     calculate_life_period_baseline,
-    calculate_weighted_location_baseline,
     combine_period_frames,
     unique_locations,
 )
@@ -92,12 +92,12 @@ def main() -> None:
         "Baseline",
         options=(
             "Life-period mean",
-            "Weighted 1961-2010 climate normal",
+            "Location-specific 1961-2010 climate normal",
         ),
         help=(
-            "The weighted 1961-2010 option makes extra ERA5-Land requests for each unique "
-            "location, using the same spatial aggregation mode, and weights them by how "
-            "long you lived there."
+            "The location-specific 1961-2010 option makes extra ERA5-Land requests for "
+            "each unique location and computes each month's anomaly relative to that "
+            "location's own 1961-2010 baseline."
         ),
     )
     aggregation_mode = sidebar.selectbox(
@@ -318,10 +318,13 @@ def main() -> None:
             return
 
     baseline_label = baseline_mode
+    baseline_metric_value = ""
     if baseline_mode == "Life-period mean":
         baseline_c = calculate_life_period_baseline(yearly)
+        baseline_metric_value = f"{baseline_c:.2f} C"
+        stripe_frame = build_stripe_frame(yearly, baseline_c)
     else:
-        with st.spinner("Calculating weighted 1961-2010 location baseline..."):
+        with st.spinner("Calculating location-specific 1961-2010 baselines..."):
             try:
                 baseline_by_location: dict[str, float] = {}
                 periods_by_location = {period.location_key: period for period in periods_preview}
@@ -339,12 +342,17 @@ def main() -> None:
                         boundary_bbox=period.bounding_box,
                     )
                     baseline_by_location[location_key] = calculate_series_mean_temperature(baseline_series)
-                baseline_c = calculate_weighted_location_baseline(periods_preview, baseline_by_location)
-            except CDSRequestError as exc:
+                stripe_frame = build_location_baseline_stripe_frame(
+                    combined=combined,
+                    baseline_by_location=baseline_by_location,
+                    aggregation_mode=aggregation_mode,
+                    rolling_window_end=analysis_end,
+                )
+                baseline_metric_value = "Per-location"
+            except (CDSRequestError, ValueError) as exc:
                 st.error(str(exc))
                 return
 
-    stripe_frame = build_stripe_frame(yearly, baseline_c)
     width_inches = width_px / png_dpi
     height_inches = height_px / png_dpi
     figure = render_stripes_figure(
@@ -363,7 +371,7 @@ def main() -> None:
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Stripes shown", int(stripe_frame["year"].count()))
-    metric_columns[1].metric("Baseline", f"{baseline_c:.2f} C")
+    metric_columns[1].metric("Baseline", baseline_metric_value)
     metric_columns[2].metric("Warmest anomaly", f"{stripe_frame['anomaly_c'].max():+.2f} C")
     metric_columns[3].metric("Coolest anomaly", f"{stripe_frame['anomaly_c'].min():+.2f} C")
     st.caption(_aggregation_mode_caption(baseline_label, aggregation_mode, analysis_end))
@@ -418,6 +426,7 @@ def main() -> None:
         yearly_display = stripe_frame.copy()
         yearly_display["window_start"] = yearly_display["window_start"].astype(str)
         yearly_display["window_end"] = yearly_display["window_end"].astype(str)
+        yearly_display["baseline_c"] = yearly_display["baseline_c"].round(2)
         yearly_display["mean_temp_c"] = yearly_display["mean_temp_c"].round(2)
         yearly_display["anomaly_c"] = yearly_display["anomaly_c"].round(2)
         yearly_display["days_covered"] = yearly_display["days_covered"].round(0).astype(int)

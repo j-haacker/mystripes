@@ -7,6 +7,7 @@ import pandas as pd
 
 from personal_warming_stripes.models import LifePeriod
 from personal_warming_stripes.processing import (
+    build_location_baseline_stripe_frame,
     build_periods_from_entries,
     build_stripe_frame,
     calculate_life_period_baseline,
@@ -181,6 +182,53 @@ class ProcessingTests(unittest.TestCase):
             },
         )
         self.assertAlmostEqual(baseline, (10 * 10 + 20 * 20) / 30)
+
+    def test_location_specific_baselines_apply_per_location(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2000, 1, 1),
+                end_date=date(2000, 12, 31),
+                latitude=1.0,
+                longitude=2.0,
+            ),
+            LifePeriod(
+                label="B",
+                place_query="B",
+                resolved_name="B",
+                start_date=date(2001, 1, 1),
+                end_date=date(2001, 12, 31),
+                latitude=3.0,
+                longitude=4.0,
+            ),
+        ]
+        frame_a = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2000-01-01", "2000-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [11.0] * 12,
+            }
+        )
+        frame_b = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2001-01-01", "2001-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [21.0] * 12,
+            }
+        )
+
+        combined, _ = combine_period_frames(periods, [frame_a, frame_b])
+        stripe_frame = build_location_baseline_stripe_frame(
+            combined=combined,
+            baseline_by_location={
+                periods[0].location_key: 10.0,
+                periods[1].location_key: 20.0,
+            },
+        )
+
+        self.assertEqual(stripe_frame["year"].tolist(), [2000, 2001])
+        self.assertEqual(stripe_frame["baseline_c"].round(2).tolist(), [10.0, 20.0])
+        self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [1.0, 1.0])
 
 
 if __name__ == "__main__":

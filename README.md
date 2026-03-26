@@ -11,7 +11,8 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 ## What the app does
 
 - Accepts a flexible number of living periods between birth and the latest available ERA5-Land date.
-- Lets users search for places by name or enter coordinates manually.
+- Lets users search for cities, regions, and countries by name or enter coordinates manually.
+- Auto-fills coordinates from the geocoder result, using an area centroid when the result is a polygon or multipolygon.
 - Pulls ERA5-Land `2m_temperature` point series for each period.
 - Aggregates hourly data into yearly means.
 - Colors each year as a warming stripe against either:

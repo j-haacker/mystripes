@@ -145,10 +145,14 @@ def main() -> None:
                 placeholder="Vienna childhood, Berlin years, current home...",
             )
             entry["place_query"] = st.text_input(
-                "Place",
+                "City or region",
                 value=entry["place_query"],
                 key=f"place_query_{index}",
-                placeholder="Vienna, Austria",
+                placeholder="Vienna, Austria or Tyrol, Austria",
+                help=(
+                    "Search by city, state, province, region, or country. Area results use "
+                    "a centroid to auto-fill coordinates."
+                ),
             )
 
             action_columns = st.columns((1, 2))
@@ -164,6 +168,7 @@ def main() -> None:
                             "display_name": result.display_name,
                             "latitude": result.latitude,
                             "longitude": result.longitude,
+                            "coordinate_source": result.coordinate_source,
                         }
                         for result in results
                     ]
@@ -188,7 +193,11 @@ def main() -> None:
                 _apply_geocoding_choice(index, selected_result)
 
             resolved_name = entry["resolved_name"] or "No geocoded place selected yet"
-            st.caption(f"Using: {resolved_name}")
+            coordinate_source = str(entry.get("coordinate_source", "")).strip()
+            if coordinate_source:
+                st.caption(f"Using: {resolved_name} ({coordinate_source})")
+            else:
+                st.caption(f"Using: {resolved_name}")
 
             coordinate_columns = st.columns(2)
             entry["latitude_text"] = coordinate_columns[0].text_input(
@@ -355,6 +364,7 @@ def _blank_entry() -> dict[str, object]:
         "resolved_name": "",
         "latitude_text": "",
         "longitude_text": "",
+        "coordinate_source": "",
         "end_date": None,
     }
 
@@ -376,6 +386,9 @@ def _apply_geocoding_choice(index: int, result: dict[str, object]) -> None:
     entry["resolved_name"] = str(result["display_name"])
     entry["latitude_text"] = f"{float(result['latitude']):.4f}"
     entry["longitude_text"] = f"{float(result['longitude']):.4f}"
+    entry["coordinate_source"] = str(result.get("coordinate_source", "")).strip()
+    st.session_state[f"latitude_{index}"] = entry["latitude_text"]
+    st.session_state[f"longitude_{index}"] = entry["longitude_text"]
 
 
 def _current_choice_index(results: list[dict[str, object]], resolved_name: str) -> int:

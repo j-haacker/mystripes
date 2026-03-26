@@ -21,6 +21,7 @@ class GeocodingResult:
     display_name: str
     latitude: float
     longitude: float
+    coordinate_source: str
 
 
 @dataclass(frozen=True)

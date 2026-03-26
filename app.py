@@ -69,12 +69,6 @@ def main() -> None:
         "timelines (e.g. your life), then export a minimal graphic in PNG, SVG, or PDF."
     )
 
-    if today > dataset_window.max_end:
-        st.info(
-            f"ERA5-Land monthly data is currently available through "
-            f"`{dataset_window.max_end.isoformat()}`. The current period ends there."
-        )
-
     _initialize_state(analysis_end)
 
     sidebar = st.sidebar
@@ -174,19 +168,6 @@ def main() -> None:
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
     file_stem = sidebar.text_input("Download name", value="mystrips")
-
-    if active_cds_config is None:
-        st.info(
-            "This app needs a Copernicus Climate Data Store account and API key. Save a local "
-            "token from the sidebar for development, enter a session-only override, or "
-            "configure `CDSAPI_KEY` in Streamlit secrets for deployment."
-        )
-    else:
-        st.info(
-            f"Using CDS credentials from `{active_cds_config.source}`. The app requests "
-            "ERA5-Land monthly means from the monthly dataset and snaps the request area to "
-            "the native 0.1 degree grid."
-        )
 
     _render_credit_and_license_panel(today.year)
 

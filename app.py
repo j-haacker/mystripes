@@ -98,6 +98,19 @@ def main() -> None:
             "long you lived there."
         ),
     )
+    aggregation_mode = sidebar.selectbox(
+        "Stripe period",
+        options=("full_calendar_years", "rolling_365_day"),
+        format_func=lambda value: {
+            "full_calendar_years": "Full calendar years only",
+            "rolling_365_day": "Trailing 365-day windows",
+        }[value],
+        help=(
+            "Full calendar years only drops partial birth and current years. Trailing "
+            "365-day windows use full 365-day periods ending on the latest available "
+            "month and day in each year."
+        ),
+    )
     width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
@@ -292,7 +305,12 @@ def main() -> None:
                 )
                 for period in periods_preview
             ]
-            combined, yearly = combine_period_frames(periods_preview, period_frames)
+            combined, yearly = combine_period_frames(
+                periods_preview,
+                period_frames,
+                aggregation_mode=aggregation_mode,
+                rolling_window_end=analysis_end,
+            )
         except (CDSRequestError, ValueError) as exc:
             st.error(str(exc))
             return
@@ -342,14 +360,11 @@ def main() -> None:
     st.image(png_bytes, use_container_width=True)
 
     metric_columns = st.columns(4)
-    metric_columns[0].metric("Years shown", int(stripe_frame["year"].count()))
+    metric_columns[0].metric("Stripes shown", int(stripe_frame["year"].count()))
     metric_columns[1].metric("Baseline", f"{baseline_c:.2f} C")
     metric_columns[2].metric("Warmest anomaly", f"{stripe_frame['anomaly_c'].max():+.2f} C")
     metric_columns[3].metric("Coolest anomaly", f"{stripe_frame['anomaly_c'].min():+.2f} C")
-    st.caption(
-        f"Baseline mode: {baseline_label}. Current year is included as a partial year through "
-        f"{analysis_end.isoformat()}."
-    )
+    st.caption(_aggregation_mode_caption(baseline_label, aggregation_mode, analysis_end))
     if spatial_mode == "radius" and radius_km is not None:
         st.caption(f"Spatial aggregation: mean across grid cells within {radius_km:.0f} km.")
     elif spatial_mode == "boundary":
@@ -378,7 +393,7 @@ def main() -> None:
     )
     st.caption(GENERATED_GRAPHICS_CC0_NOTICE)
 
-    details_tab, yearly_tab = st.tabs(("Periods", "Annual values"))
+    details_tab, yearly_tab = st.tabs(("Periods", "Stripe values"))
     with details_tab:
         st.dataframe(
             pd.DataFrame(
@@ -399,6 +414,8 @@ def main() -> None:
         )
     with yearly_tab:
         yearly_display = stripe_frame.copy()
+        yearly_display["window_start"] = yearly_display["window_start"].astype(str)
+        yearly_display["window_end"] = yearly_display["window_end"].astype(str)
         yearly_display["mean_temp_c"] = yearly_display["mean_temp_c"].round(2)
         yearly_display["anomaly_c"] = yearly_display["anomaly_c"].round(2)
         yearly_display["days_covered"] = yearly_display["days_covered"].round(0).astype(int)
@@ -645,6 +662,19 @@ def _boundary_mode_caption(entry: dict[str, object]) -> str:
         return "Boundary mode will fall back to the geocoder area extent because no polygon boundary was returned."
 
     return "Boundary mode needs a geocoder result with an area boundary or area extent."
+
+
+def _aggregation_mode_caption(baseline_label: str, aggregation_mode: str, analysis_end: date) -> str:
+    if aggregation_mode == "rolling_365_day":
+        return (
+            f"Baseline mode: {baseline_label}. Stripe period: trailing 365-day windows "
+            f"ending on {analysis_end.isoformat()} and the same month-day in earlier years."
+        )
+
+    return (
+        f"Baseline mode: {baseline_label}. Stripe period: full calendar years only, so "
+        "partial birth and current years are omitted."
+    )
 
 
 if __name__ == "__main__":

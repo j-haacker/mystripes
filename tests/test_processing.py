@@ -71,25 +71,86 @@ class ProcessingTests(unittest.TestCase):
 
         frame_a = pd.DataFrame(
             {
-                "timestamp": pd.to_datetime(["2000-01-01T00:00:00Z", "2000-07-01T00:00:00Z"], utc=True),
-                "temperature_c": [10.0, 12.0],
+                "timestamp": pd.date_range("2000-01-01", "2000-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [11.0] * 12,
             }
         )
         frame_b = pd.DataFrame(
             {
-                "timestamp": pd.to_datetime(["2001-01-01T00:00:00Z", "2001-07-01T00:00:00Z"], utc=True),
-                "temperature_c": [13.0, 15.0],
+                "timestamp": pd.date_range("2001-01-01", "2001-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [14.0] * 12,
             }
         )
 
         _, yearly = combine_period_frames(periods, [frame_a, frame_b])
         self.assertEqual(yearly["year"].tolist(), [2000, 2001])
         self.assertEqual(yearly["mean_temp_c"].round(2).tolist(), [11.0, 14.0])
+        self.assertEqual(yearly["window_start"].tolist(), [date(2000, 1, 1), date(2001, 1, 1)])
+        self.assertEqual(yearly["window_end"].tolist(), [date(2000, 12, 31), date(2001, 12, 31)])
 
         baseline = calculate_life_period_baseline(yearly)
         stripe_frame = build_stripe_frame(yearly, baseline)
-        self.assertAlmostEqual(baseline, 12.5)
+        self.assertAlmostEqual(baseline, (11.0 * 366 + 14.0 * 365) / (366 + 365))
         self.assertEqual(stripe_frame["anomaly_c"].round(2).tolist(), [-1.5, 1.5])
+
+    def test_full_calendar_years_drop_partial_years(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2000, 6, 1),
+                end_date=date(2002, 3, 31),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        timestamps = pd.date_range("2000-06-01", "2002-03-01", freq="MS", tz="UTC")
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "temperature_c": [10.0] * len(timestamps),
+            }
+        )
+
+        _, yearly = combine_period_frames(periods, [frame])
+
+        self.assertEqual(yearly["year"].tolist(), [2001])
+        self.assertEqual(yearly["window_start"].tolist(), [date(2001, 1, 1)])
+        self.assertEqual(yearly["window_end"].tolist(), [date(2001, 12, 31)])
+        self.assertEqual(yearly["days_covered"].tolist(), [365])
+
+    def test_trailing_365_day_windows_anchor_to_latest_date(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2022, 6, 30),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        timestamps = pd.date_range("2020-01-01", "2022-06-01", freq="MS", tz="UTC")
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "temperature_c": [10.0] * len(timestamps),
+            }
+        )
+
+        _, yearly = combine_period_frames(
+            periods,
+            [frame],
+            aggregation_mode="rolling_365_day",
+            rolling_window_end=date(2022, 6, 30),
+        )
+
+        self.assertEqual(yearly["window_end"].tolist(), [date(2021, 6, 30), date(2022, 6, 30)])
+        self.assertEqual(yearly["window_start"].tolist(), [date(2020, 7, 1), date(2021, 7, 1)])
+        self.assertEqual(yearly["days_covered"].tolist(), [365, 365])
+        self.assertEqual(yearly["mean_temp_c"].round(2).tolist(), [10.0, 10.0])
 
     def test_weighted_location_baseline_uses_days_lived(self) -> None:
         periods = [

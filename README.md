@@ -16,7 +16,8 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 - Pulls ERA5-Land monthly `2m_temperature` data for each period.
 - Uses the nearest single ERA5-Land grid cell by default to keep downloads small.
 - Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
-- Aggregates monthly values into yearly means, weighted by the number of covered days in each month.
+- Aggregates monthly values into stripe periods weighted by the number of covered days in each month.
+- Offers full calendar years only as the default stripe period, or trailing 365-day windows ending on the latest available month-day in each year.
 - Colors each year as a warming stripe against either:
   - the average over the user's own life-period series, or
   - a weighted 1961-2010 baseline across the locations they lived in.
@@ -97,7 +98,7 @@ Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another fr
 - Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
 - Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
 - Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
-- The current year is shown as a partial year through the latest date exposed by the monthly dataset.
+- Full-calendar-year mode omits partial birth and current years. Trailing 365-day mode instead uses full 365-day windows ending on the latest available month-day in each year.
 - If the person was born before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
 ## Operational notes

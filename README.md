@@ -39,7 +39,7 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 
    ```toml
    CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
-   CDSAPI_KEY = "your-user-id:your-api-key"
+   CDSAPI_KEY = "your-personal-access-token"
    ```
 
 3. Start the app:
@@ -94,6 +94,7 @@ Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another fr
 ## Operational notes
 
 - The CDS operator must accept the dataset terms of use in their CDS account before the API key works.
+- Current CDS tokens are personal access tokens. They should be stored as the bare token string, not `user:token`.
 - The Nominatim public service is intended for low-volume use. If traffic grows, switch to a dedicated geocoding service or your own Nominatim instance.
 
 ## Credits and licenses

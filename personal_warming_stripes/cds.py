@@ -14,6 +14,10 @@ import requests
 from personal_warming_stripes.models import CDSConfig, DatasetWindow
 
 DATASET_NAME = "reanalysis-era5-land-timeseries"
+DATASET_LICENCE_URL = (
+    "https://cds.climate.copernicus.eu/datasets/"
+    "reanalysis-era5-land-timeseries?tab=download#manage-licences"
+)
 FORM_URL = (
     "https://cds.climate.copernicus.eu/api/catalogue/v1/collections/"
     f"{DATASET_NAME}/form.json"
@@ -153,7 +157,7 @@ def fetch_point_temperature_series(
 
     message = "ERA5-Land CDS request failed."
     if last_error is not None:
-        message = f"{message} Last error: {last_error}"
+        message = _explain_cds_error(last_error)
     raise CDSRequestError(message)
 
 
@@ -252,3 +256,23 @@ def _resolve_temperature_column(frame: pd.DataFrame) -> str:
 
 def _escape_toml_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _explain_cds_error(error: Exception) -> str:
+    text = str(error)
+    lowered = text.lower()
+
+    if "required licences not accepted" in lowered:
+        return (
+            "ERA5-Land access was denied because the required CDS licence has not been "
+            f"accepted for this account. Visit {DATASET_LICENCE_URL} while logged into the "
+            "same CDS account, accept the licence, and try again."
+        )
+
+    if "401" in lowered or "unauthorized" in lowered:
+        return (
+            "CDS rejected the credentials. Current CDS authentication uses a personal access "
+            "token as the bare `CDSAPI_KEY` value, not `user:token`."
+        )
+
+    return f"ERA5-Land CDS request failed. Last error: {text}"

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from personal_warming_stripes.cds import (
+from mystrips.cds import (
     CDSCredentialsMissingError,
     CDSRequestError,
     DEFAULT_CDSAPI_URL,
@@ -17,9 +17,9 @@ from personal_warming_stripes.cds import (
     resolve_cds_config,
     save_local_cds_config,
 )
-from personal_warming_stripes.geocoding import search_places
-from personal_warming_stripes.models import CDSConfig
-from personal_warming_stripes.notices import (
+from mystrips.geocoding import search_places
+from mystrips.models import CDSConfig
+from mystrips.notices import (
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
@@ -29,8 +29,8 @@ from personal_warming_stripes.notices import (
     SOFTWARE_MIT_NOTICE,
     copernicus_credit_notice,
 )
-from personal_warming_stripes.plotting import export_figure_bytes, render_stripes_figure
-from personal_warming_stripes.processing import (
+from mystrips.plotting import export_figure_bytes, render_stripes_figure
+from mystrips.processing import (
     build_location_baseline_stripe_frame,
     build_periods_from_entries,
     build_stripe_frame,
@@ -41,7 +41,7 @@ from personal_warming_stripes.processing import (
 )
 
 st.set_page_config(
-    page_title="Personal Warming Stripes",
+    page_title="MyStrips",
     page_icon="||",
     layout="wide",
 )
@@ -62,11 +62,11 @@ def main() -> None:
     today = date.today()
     analysis_end = min(today, dataset_window.max_end)
 
-    st.title("Personal warming stripes")
+    st.title("MyStrips")
     st.write(
-        "Generate warming stripes from your own life history using ERA5-Land monthly "
-        "temperature data. Add the places you have lived, the dates when you moved, "
-        "and export a minimal stripe graphic in PNG, SVG, or PDF."
+        "Build climate strips from places and periods using ERA5-Land monthly temperature "
+        "data. Use it for life stations, multi-home stories, projects, teams, tours, or "
+        "other place-based timelines, then export a minimal graphic in PNG, SVG, or PDF."
     )
 
     if today > dataset_window.max_end:
@@ -81,13 +81,14 @@ def main() -> None:
     active_cds_config = _render_cds_access_panel(sidebar)
     sidebar.header("Output")
     birth_date = sidebar.date_input(
-        "Birth date",
+        "Timeline start",
         value=st.session_state.birth_date,
         min_value=date(1900, 1, 1),
         max_value=analysis_end,
         key="birth_date",
+        help="For personal timelines, set this to your birth date.",
     )
-    file_stem = sidebar.text_input("Download name", value="personal-warming-stripes")
+    file_stem = sidebar.text_input("Download name", value="mystrips")
     baseline_mode = sidebar.selectbox(
         "Baseline",
         options=(
@@ -198,8 +199,9 @@ def main() -> None:
         _remove_period_entry()
         st.rerun()
     controls[2].caption(
-        "Enter one location per life period. The app derives the next period start date from "
-        "the previous move date, so you do not need to manage overlapping ranges."
+        "Enter one place per period. This works for personal life stations, study or work "
+        "phases, projects, tours, or any other place-based sequence. The app derives each "
+        "next period start date from the previous period end date."
     )
 
     periods_preview, preview_errors = build_periods_from_entries(
@@ -211,7 +213,7 @@ def main() -> None:
     if birth_date < dataset_window.min_start:
         st.caption(
             f"ERA5-Land begins on {dataset_window.min_start.isoformat()}, so the stripes start "
-            "there even if your birth date is earlier."
+            "there even if your timeline start or birth date is earlier."
         )
 
     for index, entry in enumerate(st.session_state.period_entries):
@@ -227,7 +229,7 @@ def main() -> None:
                 "Optional label",
                 value=entry["custom_label"],
                 key=f"custom_label_{index}",
-                placeholder="Vienna childhood, Berlin years, current home...",
+                placeholder="Childhood in Vienna, Berlin office, field season, current base...",
             )
             entry["place_query"] = st.text_input(
                 "City or region",
@@ -305,14 +307,14 @@ def main() -> None:
 
             if index < len(st.session_state.period_entries) - 1:
                 entry["end_date"] = st.date_input(
-                    "Living here until",
+                    "Period ends",
                     value=entry["end_date"] or (analysis_end - timedelta(days=365)),
                     min_value=max(birth_date, dataset_window.min_start),
                     max_value=analysis_end - timedelta(days=1),
                     key=f"end_date_{index}",
                 )
             else:
-                st.caption(f"Current period ends on `{analysis_end.isoformat()}`.")
+                st.caption(f"Final period currently ends on `{analysis_end.isoformat()}`.")
 
     for error in preview_errors:
         st.error(error)
@@ -328,7 +330,7 @@ def main() -> None:
         )
         return
 
-    with st.spinner("Downloading ERA5-Land monthly data for your life periods..."):
+    with st.spinner("Downloading ERA5-Land monthly data for your selected periods..."):
         try:
             period_frames = [
                 fetch_point_temperature_series(
@@ -452,6 +454,7 @@ def main() -> None:
         file_name=f"{file_stem}.pdf",
         mime="application/pdf",
     )
+    st.caption("Exports work well in email signatures, presentation decks, reports, posters, and profile pages.")
     st.caption(GENERATED_GRAPHICS_CC0_NOTICE)
 
     details_tab, yearly_tab = st.tabs(("Periods", "Stripe values"))

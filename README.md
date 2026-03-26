@@ -1,16 +1,20 @@
-# Personal Warming Stripes
+# MyStrips
 
-This app lets non-technical users create a warming-stripes graphic from their own life history. They enter the places they have lived, the dates when they moved, and the app fetches ERA5-Land monthly temperature data from the Copernicus Climate Data Store before producing a minimalist stripe export.
+MyStrips turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.
+
+The exported strips are intentionally lightweight, so they can be reused in email signatures, presentation decks, reports, posters, profile pages, and web embeds.
 
 ## Why this stack
 
-- `Streamlit` keeps the UI simple enough for non-technical users and is easy to deploy from a GitHub repo.
+- `Streamlit` keeps the main UI simple enough for non-technical users and easy to deploy from GitHub.
+- `FastAPI` provides a tiny programmatic render API for automation and embed workflows.
 - `cdsapi` uses the official Copernicus Climate Data Store API flow for ERA5-Land downloads.
 - `matplotlib` gives exact export control for PNG, SVG, and PDF.
 
-## What the app does
+## What MyStrips does
 
-- Accepts a flexible number of living periods between birth and the latest available ERA5-Land date.
+- Accepts a flexible number of periods and places across one timeline.
+- Keeps the personal-life workflow easy, with labels and hints that fit birth, moves, study years, work phases, and current home.
 - Lets users search for cities, regions, and countries by name or enter coordinates manually.
 - Auto-fills coordinates from the geocoder result, using an area centroid when the result is a polygon or multipolygon.
 - Pulls ERA5-Land monthly `2m_temperature` data for each period.
@@ -18,13 +22,12 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 - Optionally averages grid cells in a chosen radius or inside the selected municipality, district, region, or other place boundary when the geocoder returns a usable area geometry.
 - Aggregates monthly values into stripe periods weighted by the number of covered days in each month.
 - Offers full calendar years only as the default stripe period, or trailing 365-day windows ending on the latest available month-day in each year.
-- Colors each year as a warming stripe against either:
-  - the average over the user's own life-period series, or
-  - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place lived in at that time.
-- Supports location-specific reference periods of `1961-2010`, the person's own lifetime window, or a custom date range.
+- Colors each stripe period against either:
+  - the average over the timeline shown, or
+  - a location-specific baseline, so each part of the timeline is compared to the normal climate of the place used at that time.
+- Supports location-specific reference periods of `1961-2010`, the timeline's own lifetime window, or a custom date range.
 - Exports the graphic as `PNG`, `SVG`, and `PDF`.
-- Lets the operator adjust width, height, and PNG DPI.
-- Shows a CDS credit notice and a licensing note for both the exported graphics and the software.
+- Includes a tiny API for rendering strips programmatically.
 
 ## Local run
 
@@ -51,29 +54,58 @@ This app lets non-technical users create a warming-stripes graphic from their ow
 
 3. Make sure the CDS licence for `reanalysis-era5-land-monthly-means` has been accepted for the account whose token you use.
 
-4. Start the app:
+4. Start the Streamlit app:
 
    ```bash
    streamlit run app.py
    ```
 
-### Pixi
+## Tiny API
 
-If you use Pixi, this repository includes [pixi.toml](pixi.toml) with a ready-to-run task:
+MyStrips now includes a small FastAPI app for programmatic rendering.
+
+Start it locally with:
+
+```bash
+uvicorn api:app --reload
+```
+
+Available endpoints:
+
+- `GET /health`
+- `GET /v1/palette`
+- `POST /v1/render`
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/render \
+  -H "Content-Type: application/json" \
+  -o mystrips.svg \
+  -d '{
+    "anomalies": [-0.8, -0.4, 0.1, 0.6, 1.0],
+    "width_px": 1200,
+    "height_px": 180,
+    "dpi": 200,
+    "format": "svg"
+  }'
+```
+
+This is useful when you want to generate small strip graphics for signatures, presentation templates, reports, or website components without going through the Streamlit UI.
+
+## Pixi
+
+If you use Pixi, this repository includes [pixi.toml](pixi.toml) with ready-to-run tasks:
 
 ```bash
 pixi run start
-```
-
-Useful shortcut:
-
-```bash
+pixi run api
 pixi run test
 ```
 
 ## Deployment
 
-Recommended host: Streamlit Community Cloud.
+Recommended host for the UI: Streamlit Community Cloud.
 
 Why:
 
@@ -83,7 +115,7 @@ Why:
 
 Deployment steps:
 
-1. Push this repository to GitHub.
+1. Push this repository to GitHub, ideally under a repo name such as `mystrips`.
 2. Create a new app in Streamlit Community Cloud and point it at `app.py`.
 3. Add `CDSAPI_KEY` and optional `CDSAPI_URL` in the app secrets.
 4. Redeploy.
@@ -99,8 +131,8 @@ Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another fr
 - Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
 - Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
 - Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
-- Full-calendar-year mode omits partial birth and current years. Trailing 365-day mode instead uses full 365-day windows ending on the latest available month-day in each year.
-- If the person was born before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
+- Full-calendar-year mode omits partial first and current years. Trailing 365-day mode instead uses full 365-day windows ending on the latest available month-day in each year.
+- If the timeline starts before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
 ## Operational notes
 

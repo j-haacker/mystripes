@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from personal_warming_stripes.cds import (
+from mystrips.cds import (
     CDSRequestError,
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,

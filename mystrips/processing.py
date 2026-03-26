@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from personal_warming_stripes.models import LifePeriod
+from mystrips.models import LifePeriod
 
 
 def build_periods_from_entries(
@@ -110,7 +110,7 @@ def combine_period_frames(
         combined_frames.append(local_frame)
 
     if not combined_frames:
-        raise ValueError("No monthly data was available for the selected life periods.")
+        raise ValueError("No monthly data was available for the selected periods.")
 
     combined = pd.concat(combined_frames, ignore_index=True).sort_values("timestamp")
     if aggregation_mode == "full_calendar_years":

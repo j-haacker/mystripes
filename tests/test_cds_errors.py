@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from personal_warming_stripes.cds import _explain_cds_error
+from mystrips.cds import _explain_cds_error
 
 
 class CDSErrorTests(unittest.TestCase):

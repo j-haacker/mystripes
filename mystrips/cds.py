@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from personal_warming_stripes.models import CDSConfig, DatasetWindow
+from mystrips.models import CDSConfig, DatasetWindow
 
 DATASET_NAME = "reanalysis-era5-land-monthly-means"
 DATASET_URL = "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"

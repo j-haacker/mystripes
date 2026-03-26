@@ -1,0 +1,1 @@
+"""MyStrips application package."""

@@ -33,7 +33,7 @@ def render_stripes_figure(
     transparent_background: bool,
 ) -> plt.Figure:
     if not anomalies:
-        raise ValueError("At least one yearly anomaly is required to render stripes.")
+        raise ValueError("At least one anomaly is required to render strips.")
 
     values = np.array([anomalies], dtype=float)
     color_limit = max(float(np.max(np.abs(values))), 0.25)

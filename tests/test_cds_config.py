@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from personal_warming_stripes.cds import (
+from mystrips.cds import (
     DEFAULT_CDSAPI_URL,
     CDSCredentialsMissingError,
     clear_local_cds_config,

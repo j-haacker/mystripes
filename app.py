@@ -53,8 +53,8 @@ def cached_dataset_window():
 
 
 @st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
-def cached_search_places(query: str):
-    return search_places(query)
+def cached_search_places(query: str, geoapify_api_key: str):
+    return search_places(query, geoapify_api_key=geoapify_api_key or None)
 
 
 def main() -> None:
@@ -253,7 +253,10 @@ def main() -> None:
             if action_columns[0].button("Find place", key=f"find_place_{index}"):
                 if entry["place_query"].strip():
                     try:
-                        results = cached_search_places(entry["place_query"].strip())
+                        results = cached_search_places(
+                            entry["place_query"].strip(),
+                            _configured_geoapify_api_key(),
+                        )
                     except Exception as exc:
                         st.error(f"Geocoding failed: {exc}")
                         results = []
@@ -536,6 +539,10 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.session_cds_user_id = ""
     if "session_cds_api_key" not in st.session_state:
         st.session_state.session_cds_api_key = ""
+
+
+def _configured_geoapify_api_key() -> str:
+    return str(st.secrets.get("GEOAPIFY_API_KEY", "")).strip()
 
 
 def _blank_entry() -> dict[str, object]:

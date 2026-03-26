@@ -112,7 +112,7 @@ Deployment steps:
 
 1. Push this repository to GitHub, ideally under a repo name such as `mystripes`.
 2. Create a new app in Streamlit Community Cloud and point it at `app.py`.
-3. Add `CDSAPI_KEY` and optional `CDSAPI_URL` in the app secrets.
+3. Add `CDSAPI_KEY`, optional `CDSAPI_URL`, and `GEOAPIFY_API_KEY` in the app secrets.
 4. Redeploy.
 
 When Streamlit secrets are available, the app prefers them over any locally saved credential file. A user can still enter a session-only override during their own browser session without changing the deployed secret.
@@ -146,10 +146,10 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 ## Data and method notes
 
 - Climate data source: ERA5-Land monthly means from the Copernicus Climate Data Store.
-- Geocoding source: OpenStreetMap Nominatim search API.
+- Geocoding source: Geoapify geocoding in hosted deployments when `GEOAPIFY_API_KEY` is configured, with OpenStreetMap Nominatim as a fallback.
 - Single-cell mode requests only the nearest native 0.1 degree ERA5-Land grid cell, not a station record.
 - Radius mode and boundary mode request the minimal bounding area needed for the selected cells, then average the matching grid cells for each month.
-- Boundary mode uses the place polygon returned by Nominatim when available; otherwise it falls back to the geocoder's area extent.
+- Boundary mode uses the place polygon returned by Nominatim when available; Geoapify-backed searches fall back to the result bounding box because the hosted geocoding response does not provide the same polygon geometry.
 - Full-calendar-year mode omits partial first and current years. The 365-day moving-average mode expands monthly values to daily coverage, applies a daily rolling mean, and samples the smoothed series monthly or at an evenly spaced fixed count. When prior data is available, the app keeps up to one year before the displayed start date for the rolling calculation and crops only after smoothing.
 - If the timeline starts before the dataset start date, the stripes start at the first available ERA5-Land monthly date.
 
@@ -157,8 +157,9 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 
 - The CDS operator must accept the dataset terms of use in their CDS account before the API key works.
 - Current CDS tokens are personal access tokens. They should be stored as the bare token string, not `user:token`.
+- Public Nominatim is not a good fit for Streamlit Community Cloud. Configure `GEOAPIFY_API_KEY` for deployment and keep Nominatim as the local fallback.
 - Downloaded monthly series are cached under `.mystripes-cache/`, which is local-only and gitignored.
-- The Nominatim public service is intended for low-volume use. If traffic grows, switch to a dedicated geocoding service or your own Nominatim instance.
+- Geocoding results are cached under the same `.mystripes-cache/` directory to avoid repeated provider requests for identical place searches.
 
 ## Credits and licenses
 

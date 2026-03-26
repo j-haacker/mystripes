@@ -24,6 +24,8 @@ from personal_warming_stripes.notices import (
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
     GENERATED_GRAPHICS_CC0_NOTICE,
+    SHOW_YOUR_STRIPES_CREDIT,
+    SHOW_YOUR_STRIPES_URL,
     SOFTWARE_MIT_NOTICE,
     copernicus_credit_notice,
 )
@@ -572,6 +574,7 @@ def _render_credit_and_license_panel(current_year: int) -> None:
         st.markdown(
             f"- Climate data access: `{ERA5_LAND_MONTHLY_DATASET_NAME}`\n"
             f"- Dataset page: {ERA5_LAND_MONTHLY_DATASET_URL}\n"
+            f"- Inspiration: {SHOW_YOUR_STRIPES_CREDIT} {SHOW_YOUR_STRIPES_URL}\n"
             f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
             f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
             f"- Generated graphics: {GENERATED_GRAPHICS_CC0_NOTICE}\n"

@@ -4,6 +4,11 @@ ERA5_LAND_MONTHLY_DATASET_NAME = "ERA5-Land monthly averaged reanalysis"
 ERA5_LAND_MONTHLY_DATASET_URL = (
     "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"
 )
+SHOW_YOUR_STRIPES_URL = "https://showyourstripes.info/"
+SHOW_YOUR_STRIPES_CREDIT = (
+    "Inspired by the #ShowYourStripes project created by Professor Ed Hawkins and "
+    "the University of Reading."
+)
 ERA5_LAND_REFERENCE_CITATION = (
     "Mu\u00f1oz Sabater, J. et al. (2021): ERA5-Land: a state-of-the-art global "
     "reanalysis dataset for land applications. Earth System Science Data, 13, "

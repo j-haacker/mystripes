@@ -2,6 +2,8 @@
 
 This app uses ERA5-Land data accessed through the Copernicus Climate Change Service (C3S) Climate Data Store (CDS).
 
+This project was inspired by [ShowYourStripes.info](https://showyourstripes.info/), the #ShowYourStripes project by Professor Ed Hawkins and the University of Reading.
+
 ## Copernicus credit notice
 
 For public outputs, include a visible Copernicus acknowledgement in the form recommended by ECMWF / C3S:

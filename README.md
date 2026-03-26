@@ -109,6 +109,7 @@ Fallback host: Hugging Face Spaces with the Streamlit SDK if you want another fr
 
 ## Credits and licenses
 
+- This project was inspired by [ShowYourStripes.info](https://showyourstripes.info/), the #ShowYourStripes project by Professor Ed Hawkins and the University of Reading.
 - The app includes a CDS credit notice based on the Copernicus / ECMWF attribution guidance.
 - See [NOTICE.md](NOTICE.md) for the project data credit notice and dataset references.
 - The software is licensed under [LICENSE](LICENSE).

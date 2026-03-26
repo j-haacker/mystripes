@@ -560,7 +560,7 @@ def _format_merged_report(report: pd.DataFrame) -> pd.DataFrame:
     display = report.copy()
     display["sample_date"] = display["sample_date"].astype(str)
     display = display.drop(columns=["timestamp"])
-    for column in ("temperature_c", "longterm_mean_c", "anomaly_c"):
+    for column in ("temperature_c", "climatology_c", "anomaly_c"):
         display[column] = pd.to_numeric(display[column], errors="coerce").round(2)
     display["days_covered"] = pd.to_numeric(display["days_covered"], errors="coerce").round(0).astype(int)
     return display

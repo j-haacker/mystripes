@@ -325,6 +325,7 @@ def _current_storyline_period_entries() -> list[dict[str, object]]:
 def _clear_period_widget_state() -> None:
     for key in list(st.session_state.keys()):
         if key.startswith((
+            "_pending_geocode_search_",
             "custom_label_",
             "end_date_",
             "geocode_choice_",
@@ -988,40 +989,26 @@ def main() -> None:
                 "City or region",
                 value=entry["place_query"],
                 key=f"place_query_{index}",
+                on_change=_queue_geocoding_search,
+                args=(index,),
                 placeholder="Vienna, Austria or Tyrol, Austria",
                 help=(
-                    "Search by city, state, province, region, or country. Area results use "
-                    "a centroid to auto-fill coordinates and can also supply an area "
-                    "boundary for boundary aggregation."
+                    "Press Enter or use Find place. Search by city, state, province, region, "
+                    "or country. Area results use a centroid to auto-fill coordinates and can "
+                    "also supply an area boundary for boundary aggregation."
                 ),
             )
 
             action_columns = st.columns((1, 2))
-            if action_columns[0].button("Find place", key=f"find_place_{index}"):
-                if entry["place_query"].strip():
-                    try:
-                        results = cached_search_places(
-                            entry["place_query"].strip(),
-                            _configured_geoapify_api_key(),
-                        )
-                    except Exception as exc:
-                        st.error(f"Geocoding failed: {exc}")
-                        results = []
-                    st.session_state[f"geocode_results_{index}"] = [
-                        {
-                            "display_name": result.display_name,
-                            "latitude": result.latitude,
-                            "longitude": result.longitude,
-                            "coordinate_source": result.coordinate_source,
-                            "geojson": result.geojson,
-                            "bounding_box": result.bounding_box,
-                        }
-                        for result in results
-                    ]
-                    if results:
-                        _apply_geocoding_choice(index, st.session_state[f"geocode_results_{index}"][0])
-                else:
-                    st.warning("Enter a place name before searching.")
+            search_requested = action_columns[0].button("Find place", key=f"find_place_{index}")
+            search_requested = bool(st.session_state.pop(f"_pending_geocode_search_{index}", False)) or search_requested
+            if search_requested:
+                try:
+                    _run_geocoding_search(index)
+                except ValueError as exc:
+                    st.warning(str(exc))
+                except Exception as exc:
+                    st.error(f"Geocoding failed: {exc}")
 
             geocode_results = st.session_state.get(f"geocode_results_{index}", [])
             if geocode_results:
@@ -1710,6 +1697,37 @@ def _apply_geocoding_choice(index: int, result: dict[str, object]) -> None:
     entry["bounding_box"] = result.get("bounding_box")
     st.session_state[f"latitude_{index}"] = entry["latitude_text"]
     st.session_state[f"longitude_{index}"] = entry["longitude_text"]
+
+
+def _queue_geocoding_search(index: int) -> None:
+    st.session_state[f"_pending_geocode_search_{index}"] = True
+
+
+def _run_geocoding_search(index: int) -> None:
+    query = str(st.session_state.get(f"place_query_{index}", "")).strip()
+    if not query:
+        st.session_state[f"geocode_results_{index}"] = []
+        st.session_state.pop(f"geocode_choice_{index}", None)
+        raise ValueError("Enter a place name before searching.")
+
+    results = cached_search_places(query, _configured_geoapify_api_key())
+    normalized_results = [
+        {
+            "display_name": result.display_name,
+            "latitude": result.latitude,
+            "longitude": result.longitude,
+            "coordinate_source": result.coordinate_source,
+            "geojson": result.geojson,
+            "bounding_box": result.bounding_box,
+        }
+        for result in results
+    ]
+    st.session_state[f"geocode_results_{index}"] = normalized_results
+    if normalized_results:
+        st.session_state[f"geocode_choice_{index}"] = normalized_results[0]["display_name"]
+        _apply_geocoding_choice(index, normalized_results[0])
+    else:
+        st.session_state.pop(f"geocode_choice_{index}", None)
 
 
 def _current_choice_index(results: list[dict[str, object]], resolved_name: str) -> int:

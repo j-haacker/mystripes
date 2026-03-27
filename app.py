@@ -6,6 +6,7 @@ from pprint import pformat
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from mystripes.cds import (
     CDSCredentialsMissingError,
@@ -42,6 +43,18 @@ from mystripes.processing import (
     build_period_report_tables,
     build_periods_from_entries,
 )
+from mystripes.storylines import (
+    LOCAL_STORYLINES_PATH,
+    build_cookie_sync_html,
+    encode_storyline_cookie_value,
+    load_cookie_storylines,
+    load_local_storylines,
+    remove_local_storyline,
+    save_local_storyline,
+    serialize_storyline_payload,
+    storyline_cookie_name,
+    storyline_storage_backend_from_host,
+)
 
 st.set_page_config(
     page_title="MyStripes",
@@ -65,6 +78,221 @@ def cached_gistemp_global_mean_estimates() -> pd.DataFrame:
     return load_global_mean_estimates()
 
 
+def _storyline_storage_backend() -> str:
+    headers = getattr(st.context, "headers", None)
+    host = ""
+    if headers is not None:
+        host = str(headers.get("host") or headers.get("Host") or "")
+    return storyline_storage_backend_from_host(host)
+
+
+def _load_saved_storylines(storage_backend: str) -> dict[str, dict[str, object]]:
+    if storage_backend == "cookie":
+        cookies = getattr(st.context, "cookies", None)
+        cookie_mapping = cookies.to_dict() if cookies is not None else {}
+        return load_cookie_storylines(cookie_mapping)
+    return load_local_storylines()
+
+
+def _set_storyline_feedback(kind: str, message: str) -> None:
+    st.session_state.storyline_feedback = {"kind": kind, "message": message}
+
+
+def _render_storyline_feedback(sidebar) -> None:
+    feedback = st.session_state.pop("storyline_feedback", None)
+    if not isinstance(feedback, dict):
+        return
+    message = str(feedback.get("message", "")).strip()
+    if not message:
+        return
+    kind = str(feedback.get("kind", "info"))
+    if kind == "success":
+        sidebar.success(message)
+    elif kind == "error":
+        sidebar.error(message)
+    else:
+        sidebar.info(message)
+
+
+def _current_storyline_period_entries() -> list[dict[str, object]]:
+    synchronized_entries: list[dict[str, object]] = []
+    entries = st.session_state.period_entries
+    for index, base_entry in enumerate(entries):
+        entry = dict(base_entry)
+        place_query_key = f"place_query_{index}"
+        latitude_key = f"latitude_{index}"
+        longitude_key = f"longitude_{index}"
+        end_date_key = f"end_date_{index}"
+        if place_query_key in st.session_state:
+            entry["place_query"] = str(st.session_state[place_query_key])
+        if latitude_key in st.session_state:
+            entry["latitude_text"] = str(st.session_state[latitude_key])
+        if longitude_key in st.session_state:
+            entry["longitude_text"] = str(st.session_state[longitude_key])
+        if index < len(entries) - 1 and end_date_key in st.session_state:
+            entry["end_date"] = st.session_state[end_date_key]
+        elif index == len(entries) - 1:
+            entry["end_date"] = None
+        synchronized_entries.append(entry)
+    return synchronized_entries
+
+
+def _clear_period_widget_state() -> None:
+    for key in list(st.session_state.keys()):
+        if key.startswith((
+            "custom_label_",
+            "end_date_",
+            "geocode_choice_",
+            "geocode_results_",
+            "latitude_",
+            "longitude_",
+            "place_query_",
+        )):
+            del st.session_state[key]
+
+
+def _apply_storyline_to_session(payload: dict[str, object], analysis_end: date) -> None:
+    _clear_period_widget_state()
+    loaded_birth_date = payload["birth_date"]
+    if not isinstance(loaded_birth_date, date):
+        loaded_birth_date = date.fromisoformat(str(loaded_birth_date))
+    clamped_birth_date = min(max(loaded_birth_date, date(1900, 1, 1)), analysis_end)
+
+    raw_entries = payload["period_entries"]
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raw_entries = [_blank_entry()]
+
+    entries: list[dict[str, object]] = []
+    for raw_entry in raw_entries:
+        entry = _blank_entry()
+        entry.update(dict(raw_entry))
+        entries.append(entry)
+
+    st.session_state.birth_date = clamped_birth_date
+    st.session_state.period_entries = entries
+    for index, entry in enumerate(entries):
+        st.session_state[f"place_query_{index}"] = str(entry.get("place_query", "") or "")
+        st.session_state[f"latitude_{index}"] = str(entry.get("latitude_text", "") or "")
+        st.session_state[f"longitude_{index}"] = str(entry.get("longitude_text", "") or "")
+        if index < len(entries) - 1 and entry.get("end_date") is not None:
+            st.session_state[f"end_date_{index}"] = entry["end_date"]
+
+
+def _cookie_storage_note() -> str:
+    return (
+        "On Streamlit Community Cloud, saved story lines are stored in browser cookies that "
+        "stay on your machine. Aside from those cookies and the requests needed to use the "
+        "app, it generally does not store user data for you."
+    )
+
+
+def _render_storyline_panel(sidebar, analysis_end: date) -> None:
+    storage_backend = _storyline_storage_backend()
+    _render_storyline_feedback(sidebar)
+
+    try:
+        saved_storylines = _load_saved_storylines(storage_backend)
+    except Exception as exc:
+        sidebar.error(f"Could not load saved story lines: {exc}")
+        saved_storylines = {}
+
+    with sidebar.expander("Story lines", expanded=bool(saved_storylines)):
+        st.caption(
+            "Save, reload, and remove place-based story lines so you can revisit the same "
+            "timeline later."
+        )
+        st.text_input(
+            "Story line name",
+            key="storyline_name",
+            placeholder="Life in Vienna, Berlin, Amsterdam...",
+            help="Used to identify the saved story line when loading it later.",
+        )
+
+        selected_storyline_name = ""
+        if saved_storylines:
+            saved_names = list(saved_storylines)
+            if st.session_state.saved_storyline_name not in saved_names:
+                st.session_state.saved_storyline_name = saved_names[0]
+            selected_storyline_name = st.selectbox(
+                "Saved story lines",
+                options=saved_names,
+                key="saved_storyline_name",
+            )
+        else:
+            st.caption("No saved story lines yet.")
+
+        action_columns = st.columns(3)
+        save_requested = action_columns[0].button("Save", key="save_storyline")
+        load_requested = action_columns[1].button(
+            "Load",
+            key="load_storyline",
+            disabled=not selected_storyline_name,
+        )
+        remove_requested = action_columns[2].button(
+            "Remove",
+            key="remove_storyline",
+            disabled=not selected_storyline_name,
+        )
+
+        if storage_backend == "file":
+            st.caption(f"Local story lines are written to `{LOCAL_STORYLINES_PATH}` on this machine.")
+
+        if save_requested:
+            try:
+                payload = serialize_storyline_payload(
+                    name=st.session_state.storyline_name,
+                    birth_date=st.session_state.birth_date,
+                    period_entries=_current_storyline_period_entries(),
+                    include_boundary_geojson=storage_backend == "file",
+                )
+                st.session_state.storyline_name = str(payload["name"])
+                st.session_state.saved_storyline_name = str(payload["name"])
+                if storage_backend == "file":
+                    save_local_storyline(payload)
+                    _set_storyline_feedback("success", f"Saved story line `{payload['name']}`.")
+                    st.rerun()
+
+                cookie_name = storyline_cookie_name(payload["name"])
+                cookie_value = encode_storyline_cookie_value(payload)
+                st.info(_cookie_storage_note())
+                components.html(build_cookie_sync_html(cookie_name, cookie_value), height=0, width=0)
+                st.stop()
+            except Exception as exc:
+                st.error(str(exc))
+
+        if load_requested and selected_storyline_name:
+            payload = saved_storylines[selected_storyline_name]
+            _apply_storyline_to_session(payload, analysis_end)
+            st.session_state.storyline_name = selected_storyline_name
+            st.session_state.saved_storyline_name = selected_storyline_name
+            _set_storyline_feedback("success", f"Loaded story line `{selected_storyline_name}`.")
+            st.rerun()
+
+        if remove_requested and selected_storyline_name:
+            try:
+                if storage_backend == "file":
+                    removed = remove_local_storyline(selected_storyline_name)
+                    if removed:
+                        if st.session_state.storyline_name == selected_storyline_name:
+                            st.session_state.storyline_name = ""
+                        st.session_state.saved_storyline_name = ""
+                        _set_storyline_feedback("success", f"Removed story line `{selected_storyline_name}`.")
+                        st.rerun()
+                    st.error(f"No saved story line named `{selected_storyline_name}` was found.")
+                else:
+                    if st.session_state.storyline_name == selected_storyline_name:
+                        st.session_state.storyline_name = ""
+                    st.session_state.saved_storyline_name = ""
+                    components.html(
+                        build_cookie_sync_html(storyline_cookie_name(selected_storyline_name), None),
+                        height=0,
+                        width=0,
+                    )
+                    st.stop()
+            except Exception as exc:
+                st.error(str(exc))
+
+
 def main() -> None:
     dataset_window = cached_dataset_window()
     today = date.today()
@@ -80,6 +308,7 @@ def main() -> None:
     _initialize_state(analysis_end)
 
     sidebar = st.sidebar
+    _render_storyline_panel(sidebar, analysis_end)
     active_cds_config = _render_cds_access_panel(sidebar)
     sidebar.header("Output")
     birth_date = sidebar.date_input(
@@ -689,6 +918,10 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.session_cds_user_id = ""
     if "session_cds_api_key" not in st.session_state:
         st.session_state.session_cds_api_key = ""
+    if "storyline_name" not in st.session_state:
+        st.session_state.storyline_name = ""
+    if "saved_storyline_name" not in st.session_state:
+        st.session_state.saved_storyline_name = ""
 
 
 def _configured_geoapify_api_key() -> str:

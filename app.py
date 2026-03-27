@@ -113,6 +113,19 @@ def main() -> None:
             "365-day rolling mean, then samples the smoothed series."
         ),
     )
+    reference_period_mode = sidebar.selectbox(
+        "Climatology reference period",
+        options=("climate_normal_1961_2010", "story_line_period"),
+        format_func=lambda value: {
+            "climate_normal_1961_2010": "1961-2010 climate normal",
+            "story_line_period": "Story line period",
+        }[value],
+        help=(
+            "Choose which date window defines the per-location day-of-year climatology. "
+            "The 1961-2010 option may trigger extra ERA5-Land requests for each unique "
+            "place. Story line period keeps the current behavior."
+        ),
+    )
     rolling_sample_mode = "monthly"
     rolling_strip_count = None
     if aggregation_mode == "rolling_365_day":
@@ -314,15 +327,39 @@ def main() -> None:
         _debug_print(debug_mode, "missing_cds_credentials", period_aliases=debug_period_aliases)
         return
 
+    report_start = max(birth_date, dataset_window.min_start)
+    try:
+        (
+            reference_start,
+            reference_end,
+            baseline_label,
+            baseline_metric_value,
+            shared_climatology_label,
+        ) = _resolve_climatology_reference_period(
+            reference_mode=reference_period_mode,
+            story_line_start=report_start,
+            story_line_end=analysis_end,
+            dataset_start=dataset_window.min_start,
+            dataset_end=dataset_window.max_end,
+        )
+    except ValueError as exc:
+        _debug_print(debug_mode, "reference_period_error", str(exc), period_aliases=debug_period_aliases)
+        st.error(str(exc))
+        return
+
     _debug_print(
         debug_mode,
         "generate_request",
         {
-            "report_start": max(birth_date, dataset_window.min_start).isoformat(),
+            "report_start": report_start.isoformat(),
             "analysis_end": analysis_end.isoformat(),
             "spatial_mode": spatial_mode,
             "radius_km": radius_km,
-            "climatology": "per-location day-of-year from full location timelines",
+            "climatology": {
+                "mode": reference_period_mode,
+                "start": reference_start.isoformat(),
+                "end": reference_end.isoformat(),
+            },
             "aggregation_mode": aggregation_mode,
             "rolling_sample_mode": rolling_sample_mode,
             "rolling_strip_count": rolling_strip_count,
@@ -342,9 +379,14 @@ def main() -> None:
         period_aliases=debug_period_aliases,
     )
 
-    with st.spinner("Downloading ERA5-Land monthly data for your selected periods..."):
+    download_message = (
+        "Downloading ERA5-Land monthly data for your selected periods and the 1961-2010 "
+        "reference period..."
+        if reference_period_mode == "climate_normal_1961_2010"
+        else "Downloading ERA5-Land monthly data for your selected periods..."
+    )
+    with st.spinner(download_message):
         try:
-            report_start = max(birth_date, dataset_window.min_start)
             rolling_crop_start = min(period.start_date for period in periods_preview)
             first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
             first_location_key = periods_preview[0].location_key
@@ -371,18 +413,46 @@ def main() -> None:
                 for location_key, period in unique_periods_by_location.items()
             }
             period_frames = [location_frames[period.location_key] for period in periods_preview]
+            baseline_period_frames = None
+            if reference_period_mode == "climate_normal_1961_2010":
+                baseline_location_frames = {
+                    location_key: fetch_point_temperature_series(
+                        config=active_cds_config,
+                        latitude=period.latitude,
+                        longitude=period.longitude,
+                        start_date=reference_start,
+                        end_date=reference_end,
+                        spatial_mode=spatial_mode,
+                        radius_km=radius_km,
+                        boundary_geojson=period.boundary_geojson,
+                        boundary_bbox=period.bounding_box,
+                    )
+                    for location_key, period in unique_periods_by_location.items()
+                }
+                baseline_period_frames = [
+                    baseline_location_frames[period.location_key] for period in periods_preview
+                ]
         except (CDSRequestError, ValueError) as exc:
             _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
             st.error(str(exc))
             return
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
+    if baseline_period_frames is not None:
+        _debug_print(
+            debug_mode,
+            "fetched_baseline_period_frames",
+            baseline_period_frames,
+            period_aliases=debug_period_aliases,
+        )
 
-    baseline_label = "Per-location day-of-year climatology from the full timeline"
-    baseline_metric_value = "Per-location full timeline"
     _debug_print(
         debug_mode,
         "period_baseline_mode",
-        "Using per-location day-of-year climatology from the full fetched timeline.",
+        {
+            "label": baseline_label,
+            "start": reference_start.isoformat(),
+            "end": reference_end.isoformat(),
+        },
         period_aliases=debug_period_aliases,
     )
 
@@ -392,9 +462,10 @@ def main() -> None:
             frames_by_period=period_frames,
             report_start=report_start - timedelta(days=first_period_history_days),
             report_end=analysis_end,
-            baseline_start=report_start,
-            baseline_end=analysis_end,
+            baseline_start=reference_start,
+            baseline_end=reference_end,
             first_period_history_days=first_period_history_days,
+            baseline_frames_by_period=baseline_period_frames,
         )
         stripe_frame = aggregate_daily_series_to_stripes(
             daily_series=merged_daily,
@@ -417,8 +488,9 @@ def main() -> None:
             frames_by_period=period_frames,
             report_start=report_start,
             report_end=analysis_end,
-            baseline_start=report_start,
-            baseline_end=analysis_end,
+            baseline_start=reference_start,
+            baseline_end=reference_end,
+            baseline_frames_by_period=baseline_period_frames,
         )
     except ValueError as exc:
         _debug_print(debug_mode, "report_build_error", str(exc), period_aliases=debug_period_aliases)
@@ -510,7 +582,7 @@ def main() -> None:
         st.caption(
             "Each entered period keeps its own monthly temperature, climatology, and "
             "anomaly columns. When two periods point to the same place, they reuse the "
-            "same full-location climatology."
+            f"same {shared_climatology_label}."
         )
         if aggregation_mode == "rolling_365_day":
             st.caption(
@@ -812,6 +884,47 @@ def _boundary_mode_caption(entry: dict[str, object]) -> str:
         return "Boundary mode will fall back to the geocoder area extent because no polygon boundary was returned."
 
     return "Boundary mode needs a geocoder result with an area boundary or area extent."
+
+
+def _resolve_climatology_reference_period(
+    reference_mode: str,
+    story_line_start: date,
+    story_line_end: date,
+    dataset_start: date,
+    dataset_end: date,
+) -> tuple[date, date, str, str, str]:
+    if reference_mode == "climate_normal_1961_2010":
+        reference_start = max(dataset_start, date(1961, 1, 1))
+        reference_end = min(dataset_end, date(2010, 12, 31))
+        if reference_end < reference_start:
+            raise ValueError(
+                "The 1961-2010 climate-normal reference period is not available in the current "
+                "ERA5-Land dataset window."
+            )
+        date_range_label = f"{reference_start.isoformat()} to {reference_end.isoformat()}"
+        metric_value = (
+            "1961-2010"
+            if reference_start == date(1961, 1, 1) and reference_end == date(2010, 12, 31)
+            else date_range_label
+        )
+        return (
+            reference_start,
+            reference_end,
+            f"Per-location day-of-year climatology from {date_range_label}",
+            metric_value,
+            f"per-location climatology from {date_range_label}",
+        )
+
+    if reference_mode == "story_line_period":
+        return (
+            story_line_start,
+            story_line_end,
+            "Per-location day-of-year climatology from the full story line period",
+            "Story line period",
+            "per-location climatology from the full story line period",
+        )
+
+    raise ValueError(f"Unsupported climatology reference period: {reference_mode}")
 
 
 def _aggregation_mode_caption(

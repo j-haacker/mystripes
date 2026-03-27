@@ -83,6 +83,7 @@ def build_period_report_tables(
     period_baselines: list[float] | None = None,
     baseline_start: date | None = None,
     baseline_end: date | None = None,
+    baseline_frames_by_period: list[pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     daily_temperature, daily_baseline, daily_anomaly = _build_period_daily_tables(
         periods=periods,
@@ -92,6 +93,7 @@ def build_period_report_tables(
         period_baselines=period_baselines,
         baseline_start=baseline_start,
         baseline_end=baseline_end,
+        baseline_frames_by_period=baseline_frames_by_period,
     )
     full_report = _build_full_period_report(
         daily_temperature=daily_temperature,
@@ -151,6 +153,7 @@ def build_merged_daily_series(
     baseline_start: date | None = None,
     baseline_end: date | None = None,
     first_period_history_days: int = 0,
+    baseline_frames_by_period: list[pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     daily_temperature, daily_baseline, daily_anomaly = _build_period_daily_tables(
         periods=periods,
@@ -160,6 +163,7 @@ def build_merged_daily_series(
         period_baselines=period_baselines,
         baseline_start=baseline_start,
         baseline_end=baseline_end,
+        baseline_frames_by_period=baseline_frames_by_period,
     )
     return _assemble_merged_daily_series(
         periods=periods,
@@ -204,11 +208,14 @@ def _build_period_daily_tables(
     period_baselines: list[float] | None = None,
     baseline_start: date | None = None,
     baseline_end: date | None = None,
+    baseline_frames_by_period: list[pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if len(frames_by_period) != len(periods):
         raise ValueError("Each period needs a matching temperature frame.")
     if period_baselines is not None and len(period_baselines) != len(periods):
         raise ValueError("Each period needs a matching baseline value.")
+    if baseline_frames_by_period is not None and len(baseline_frames_by_period) != len(periods):
+        raise ValueError("Each period needs a matching baseline temperature frame.")
 
     effective_baseline_start = baseline_start or report_start
     effective_baseline_end = baseline_end or report_end
@@ -221,12 +228,18 @@ def _build_period_daily_tables(
         report_start=report_start,
         report_end=report_end,
     )
+    baseline_reference = _build_daily_reference_table(
+        periods=periods,
+        daily_temperature=daily_temperature,
+        baseline_frames_by_period=baseline_frames_by_period,
+        baseline_start=effective_baseline_start,
+        baseline_end=effective_baseline_end,
+    )
     daily_baseline = _build_daily_baseline_table(
         periods=periods,
         daily_temperature=daily_temperature,
         period_baselines=period_baselines,
-        baseline_start=effective_baseline_start,
-        baseline_end=effective_baseline_end,
+        baseline_reference=baseline_reference,
     )
     daily_anomaly = _build_daily_anomaly_table(
         daily_temperature=daily_temperature,
@@ -274,16 +287,32 @@ def _build_monthly_temperature_table(
     return temperature_table
 
 
-def _build_daily_baseline_table(
+def _build_daily_reference_table(
     periods: list[LifePeriod],
     daily_temperature: pd.DataFrame,
-    period_baselines: list[float] | None,
+    baseline_frames_by_period: list[pd.DataFrame] | None,
     baseline_start: date,
     baseline_end: date,
 ) -> pd.DataFrame:
     baseline_index = pd.date_range(start=baseline_start, end=baseline_end, freq="D")
-    baseline_reference = daily_temperature.reindex(baseline_index)
+    if baseline_frames_by_period is None:
+        return daily_temperature.reindex(baseline_index)
 
+    baseline_reference = _build_daily_temperature_table(
+        periods=periods,
+        frames_by_period=baseline_frames_by_period,
+        report_start=baseline_start,
+        report_end=baseline_end,
+    )
+    return baseline_reference.reindex(baseline_index)
+
+
+def _build_daily_baseline_table(
+    periods: list[LifePeriod],
+    daily_temperature: pd.DataFrame,
+    period_baselines: list[float] | None,
+    baseline_reference: pd.DataFrame,
+) -> pd.DataFrame:
     daily_baseline = pd.DataFrame(index=daily_temperature.index)
     reference_by_location: dict[str, pd.Series] = {}
     for index, column in enumerate(daily_temperature.columns):

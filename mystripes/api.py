@@ -28,6 +28,12 @@ def build_stripe_data(
     rolling_window_end: date | datetime | str | pd.Timestamp | None = None,
     rolling_sample_mode: RollingSampleMode = "monthly",
     rolling_strip_count: int | None = None,
+    baseline_start: date | datetime | str | pd.Timestamp | None = None,
+    baseline_end: date | datetime | str | pd.Timestamp | None = None,
+    baseline_period_data: pd.DataFrame
+    | Sequence[pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any]]
+    | Mapping[object, Any]
+    | None = None,
 ) -> dict[str, Any]:
     """Build stripe-ready data from periods plus monthly temperature frames.
 
@@ -42,17 +48,26 @@ def build_stripe_data(
     `temperature_c`/`temperature`/`value`.
 
     Climatology is always computed per period from day-of-year means before the
-    periods are merged into one timeline.
+    periods are merged into one timeline. Pass `baseline_period_data` together with
+    `baseline_start` and `baseline_end` when the climatology reference window lies
+    outside the displayed timeline.
     """
 
     normalized_periods = _coerce_periods(periods)
     normalized_frames = _coerce_period_frames(period_data, normalized_periods)
+    normalized_baseline_frames = (
+        _coerce_period_frames(baseline_period_data, normalized_periods)
+        if baseline_period_data is not None
+        else None
+    )
     effective_window_end = _coerce_optional_date(rolling_window_end) or max(
         period.end_date for period in normalized_periods
     )
     effective_rolling_crop_start = min(period.start_date for period in normalized_periods)
     first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
     timeline_start = min(period.start_date for period in normalized_periods)
+    effective_baseline_start = _coerce_optional_date(baseline_start) or timeline_start
+    effective_baseline_end = _coerce_optional_date(baseline_end) or effective_window_end
 
     result: dict[str, Any] = {
         "periods": normalized_periods,
@@ -60,6 +75,8 @@ def build_stripe_data(
         "rolling_window_end": effective_window_end,
         "rolling_sample_mode": rolling_sample_mode,
         "rolling_strip_count": rolling_strip_count,
+        "baseline_start": effective_baseline_start,
+        "baseline_end": effective_baseline_end,
     }
 
     daily_series = build_merged_daily_series(
@@ -67,9 +84,10 @@ def build_stripe_data(
         frames_by_period=normalized_frames,
         report_start=timeline_start - timedelta(days=first_period_history_days),
         report_end=effective_window_end,
-        baseline_start=timeline_start,
-        baseline_end=effective_window_end,
+        baseline_start=effective_baseline_start,
+        baseline_end=effective_baseline_end,
         first_period_history_days=first_period_history_days,
+        baseline_frames_by_period=normalized_baseline_frames,
     )
     stripe_frame = aggregate_daily_series_to_stripes(
         daily_series=daily_series,
@@ -84,8 +102,9 @@ def build_stripe_data(
         frames_by_period=normalized_frames,
         report_start=timeline_start,
         report_end=effective_window_end,
-        baseline_start=timeline_start,
-        baseline_end=effective_window_end,
+        baseline_start=effective_baseline_start,
+        baseline_end=effective_baseline_end,
+        baseline_frames_by_period=normalized_baseline_frames,
     )
     result["daily_temperature"] = daily_series[
         ["daily_date", "sample_date", "current_period", "current_place", "temperature_c"]

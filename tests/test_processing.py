@@ -613,6 +613,46 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue((stripe_frame["baseline_c"].round(2) == 10.0).all())
         self.assertTrue((stripe_frame["anomaly_c"].round(2) == 1.0).all())
 
+    def test_separate_reference_frames_support_climatology_outside_report_window(self) -> None:
+        periods = [
+            LifePeriod(
+                label="A",
+                place_query="A",
+                resolved_name="A",
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 12, 31),
+                latitude=1.0,
+                longitude=2.0,
+            )
+        ]
+        report_frame = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2020-01-01", "2020-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [11.0] * 12,
+            }
+        )
+        baseline_frame = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2000-01-01", "2000-12-01", freq="MS", tz="UTC"),
+                "temperature_c": [10.0] * 12,
+            }
+        )
+
+        full_report, merged_report = build_period_report_tables(
+            periods=periods,
+            frames_by_period=[report_frame],
+            report_start=date(2020, 1, 1),
+            report_end=date(2020, 12, 31),
+            baseline_start=date(2000, 1, 1),
+            baseline_end=date(2000, 12, 31),
+            baseline_frames_by_period=[baseline_frame],
+        )
+
+        self.assertTrue((full_report["Period 1: A climatology_c"].round(2) == 10.0).all())
+        self.assertTrue((full_report["Period 1: A anomaly_c"].round(2) == 1.0).all())
+        self.assertTrue((merged_report["climatology_c"].round(2) == 10.0).all())
+        self.assertTrue((merged_report["anomaly_c"].round(2) == 1.0).all())
+
 
 if __name__ == "__main__":
     unittest.main()

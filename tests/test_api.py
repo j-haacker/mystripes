@@ -101,6 +101,42 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(len(stripe_data["stripe_frame"]), 3)
         self.assertEqual(stripe_data["stripe_frame"]["sample_date"].tolist()[-1], date(2021, 6, 30))
 
+    def test_build_stripe_data_accepts_separate_baseline_period_data(self) -> None:
+        stripe_data = build_stripe_data(
+            periods=[
+                {
+                    "label": "A",
+                    "start_date": date(2020, 1, 1),
+                    "end_date": date(2020, 12, 31),
+                    "latitude": 1.0,
+                    "longitude": 2.0,
+                }
+            ],
+            period_data=[
+                pd.DataFrame(
+                    {
+                        "timestamp": pd.date_range("2020-01-01", "2020-12-01", freq="MS", tz="UTC"),
+                        "temperature_c": [11.0] * 12,
+                    }
+                )
+            ],
+            baseline_period_data=[
+                pd.DataFrame(
+                    {
+                        "timestamp": pd.date_range("2000-01-01", "2000-12-01", freq="MS", tz="UTC"),
+                        "temperature_c": [10.0] * 12,
+                    }
+                )
+            ],
+            baseline_start=date(2000, 1, 1),
+            baseline_end=date(2000, 12, 31),
+        )
+
+        self.assertEqual(stripe_data["baseline_start"], date(2000, 1, 1))
+        self.assertEqual(stripe_data["baseline_end"], date(2000, 12, 31))
+        self.assertEqual(stripe_data["stripe_frame"]["baseline_c"].round(2).tolist(), [10.0])
+        self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0])
+
     def test_plot_stripes_can_save_svg(self) -> None:
         stripe_data = {
             "stripe_frame": pd.DataFrame(

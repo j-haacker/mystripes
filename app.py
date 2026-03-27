@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from html import escape
+from time import perf_counter
 from uuid import uuid4
 from pprint import pformat
 
@@ -359,6 +361,221 @@ def _apply_storyline_to_session(payload: dict[str, object], analysis_end: date) 
         st.session_state[f"longitude_{index}"] = str(entry.get("longitude_text", "") or "")
         if index < len(entries) - 1 and entry.get("end_date") is not None:
             st.session_state[f"end_date_{index}"] = entry["end_date"]
+
+
+def _format_progress_duration(total_seconds: float) -> str:
+    rounded_seconds = max(0, int(round(total_seconds)))
+    minutes, seconds = divmod(rounded_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _format_progress_rate(rate_per_minute: float, unit_label: str) -> str:
+    if rate_per_minute >= 10:
+        value_text = f"{rate_per_minute:.0f}"
+    elif rate_per_minute >= 1:
+        value_text = f"{rate_per_minute:.1f}"
+    else:
+        value_text = f"{rate_per_minute:.2f}"
+    return f"{value_text} {unit_label}/min"
+
+
+def _request_batch_label(event: dict[str, object]) -> str:
+    parts: list[str] = []
+    request_index = int(event.get("request_index") or 0)
+    request_count = int(event.get("request_count") or 0)
+    if request_index and request_count:
+        parts.append(f"batch {request_index}/{request_count}")
+
+    request_year_start = str(event.get("request_year_start") or "")
+    request_year_end = str(event.get("request_year_end") or "")
+    if request_year_start and request_year_end:
+        if request_year_start == request_year_end:
+            parts.append(request_year_start)
+        else:
+            parts.append(f"{request_year_start}-{request_year_end}")
+
+    month_count = int(event.get("month_count") or 0)
+    if month_count:
+        parts.append(f"{month_count} months/year")
+
+    return ", ".join(parts)
+
+
+def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
+    stage = str(event.get("stage") or "")
+    range_index = int(event.get("range_index") or 0)
+    range_count = int(event.get("range_count") or 0)
+    range_start = str(event.get("range_start") or "")
+    range_end = str(event.get("range_end") or "")
+
+    if stage == "timeline_cache_hit":
+        return "Using the saved full timeline from local cache."
+    if stage == "timeline_fetch_plan":
+        missing_range_count = int(event.get("missing_range_count") or 0)
+        noun = "segment" if missing_range_count == 1 else "segments"
+        if bool(event.get("has_cached_data")):
+            return f"Refreshing {missing_range_count} missing timeline {noun} from CDS."
+        return f"Preparing {missing_range_count} timeline {noun} from CDS."
+    if stage == "missing_range_started":
+        return f"Timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
+    if stage == "request_cache_hit":
+        return f"Using a saved request chunk for {range_start} to {range_end}."
+    if stage == "request_plan":
+        request_count = int(event.get("request_count") or 0)
+        noun = "batch" if request_count == 1 else "batches"
+        return f"Need {request_count} CDS request {noun} for this timeline segment."
+    if stage == "request_started":
+        batch_label = _request_batch_label(event)
+        return f"Downloading CDS {batch_label}." if batch_label else "Downloading CDS data."
+    if stage == "request_finished":
+        batch_label = _request_batch_label(event)
+        return f"Finished CDS {batch_label}." if batch_label else "Finished a CDS request batch."
+    if stage == "request_failed":
+        message = str(event.get("message") or "")
+        return message or "A CDS request failed."
+    if stage == "point_fetch_completed":
+        return "Parsed downloaded monthly data for the current timeline segment."
+    if stage == "missing_range_finished":
+        return f"Finished timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
+    if stage == "timeline_fetch_completed":
+        return "Saved the refreshed timeline to the local cache."
+    return "Loading ERA5-Land monthly data..."
+
+
+def _render_temperature_fetch_progress(
+    placeholder,
+    *,
+    total_locations: int,
+    completed_locations: int,
+    current_location_index: int,
+    current_location_label: str,
+    current_detail: str,
+    completed_request_batches: int,
+    current_request_index: int,
+    current_request_count: int,
+    current_request_complete: bool,
+    started_at: float,
+    active: bool,
+) -> None:
+    normalized_total_locations = max(1, total_locations)
+    in_location_fraction = 0.0
+    if active and current_request_count > 0:
+        completed_in_current = current_request_index
+        if not current_request_complete:
+            completed_in_current = max(0, completed_in_current - 1)
+        in_location_fraction = min(1.0, completed_in_current / current_request_count)
+    elif active and current_location_label:
+        in_location_fraction = min(0.06, 1.0 / normalized_total_locations)
+
+    overall_fraction = min(1.0, (completed_locations + in_location_fraction) / normalized_total_locations)
+    display_fraction = overall_fraction
+    if active:
+        display_fraction = max(display_fraction, min(0.04, 1.0 / normalized_total_locations))
+
+    elapsed_seconds = perf_counter() - started_at
+    rate_parts: list[str] = []
+    if elapsed_seconds > 0 and completed_locations > 0:
+        rate_parts.append(_format_progress_rate(completed_locations * 60.0 / elapsed_seconds, "locations"))
+    if elapsed_seconds > 0 and completed_request_batches > 0:
+        rate_parts.append(_format_progress_rate(completed_request_batches * 60.0 / elapsed_seconds, "CDS batches"))
+
+    title = "Preparing ERA5-Land monthly series"
+    if current_location_label:
+        title = f"Location {current_location_index}/{normalized_total_locations}: {current_location_label}"
+    if not active and completed_locations >= total_locations:
+        title = f"Loaded {completed_locations}/{normalized_total_locations} locations"
+
+    status_line = current_detail or "Loading ERA5-Land monthly data..."
+    summary_left = f"{completed_locations}/{normalized_total_locations} places ready"
+    summary_right = " | ".join(rate_parts) if rate_parts else "Waiting for the first completed step..."
+    elapsed_text = f"Elapsed {_format_progress_duration(elapsed_seconds)}"
+    width_percent = max(0.0, min(100.0, display_fraction * 100.0))
+    active_class = " mystripes-progress-fill-active" if active else ""
+
+    html = f'''
+<style>
+@keyframes mystripes-progress-shimmer {{
+  from {{ background-position: 0 0; }}
+  to {{ background-position: 1.6rem 0; }}
+}}
+.mystripes-progress-card {{
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 0.9rem;
+  padding: 0.9rem 1rem;
+  margin: 0.35rem 0 1rem 0;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.96));
+}}
+.mystripes-progress-kicker {{
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+}}
+.mystripes-progress-title {{
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 0.15rem;
+}}
+.mystripes-progress-detail {{
+  color: #334155;
+  margin-top: 0.2rem;
+}}
+.mystripes-progress-track {{
+  position: relative;
+  overflow: hidden;
+  height: 0.8rem;
+  margin: 0.75rem 0 0.55rem 0;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}}
+.mystripes-progress-fill {{
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f766e, #38bdf8);
+}}
+.mystripes-progress-fill-active {{
+  background-image:
+    linear-gradient(135deg,
+      rgba(15, 118, 110, 0.95) 0%,
+      rgba(15, 118, 110, 0.95) 25%,
+      rgba(56, 189, 248, 0.95) 25%,
+      rgba(56, 189, 248, 0.95) 50%,
+      rgba(15, 118, 110, 0.95) 50%,
+      rgba(15, 118, 110, 0.95) 75%,
+      rgba(56, 189, 248, 0.95) 75%,
+      rgba(56, 189, 248, 0.95) 100%);
+  background-size: 1.6rem 1.6rem;
+  animation: mystripes-progress-shimmer 0.9s linear infinite;
+}}
+.mystripes-progress-meta {{
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+  color: #475569;
+}}
+</style>
+<div class="mystripes-progress-card">
+  <div class="mystripes-progress-kicker">ERA5-Land load progress</div>
+  <div class="mystripes-progress-title">{escape(title)}</div>
+  <div class="mystripes-progress-detail">{escape(status_line)}</div>
+  <div class="mystripes-progress-track">
+    <div class="mystripes-progress-fill{active_class}" style="width: {width_percent:.1f}%;"></div>
+  </div>
+  <div class="mystripes-progress-meta">
+    <span>{escape(summary_left)}</span>
+    <span>{escape(summary_right)}</span>
+    <span>{escape(elapsed_text)}</span>
+  </div>
+</div>
+'''
+    placeholder.markdown(html, unsafe_allow_html=True)
 
 
 def _cookie_consent_copy() -> str:
@@ -968,32 +1185,124 @@ def main() -> None:
         period_aliases=debug_period_aliases,
     )
 
-    with st.spinner("Loading saved ERA5-Land monthly series for your selected places and updating only when needed..."):
-        try:
-            rolling_crop_start = min(period.start_date for period in periods_preview)
-            first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
-            unique_periods_by_location = {}
-            for period in periods_preview:
-                unique_periods_by_location.setdefault(period.location_key, period)
-            location_frames = {
-                location_key: fetch_saved_temperature_series(
-                    config=active_cds_config,
-                    latitude=period.latitude,
-                    longitude=period.longitude,
-                    start_date=dataset_window.min_start,
-                    end_date=effective_report_end,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=period.boundary_geojson,
-                    boundary_bbox=period.bounding_box,
-                )
-                for location_key, period in unique_periods_by_location.items()
-            }
-            period_frames = [location_frames[period.location_key] for period in periods_preview]
-        except (CDSRequestError, ValueError) as exc:
-            _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
-            st.error(str(exc))
-            return
+    rolling_crop_start = min(period.start_date for period in periods_preview)
+    first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
+    unique_periods_by_location = {}
+    for period in periods_preview:
+        unique_periods_by_location.setdefault(period.location_key, period)
+
+    download_progress_placeholder = st.empty()
+    download_started_at = perf_counter()
+    total_locations = len(unique_periods_by_location)
+    completed_locations = 0
+    completed_request_batches = 0
+    current_location_index = 0
+    current_location_label = ""
+    current_detail = "Checking saved timelines and determining whether CDS updates are needed."
+    current_request_index = 0
+    current_request_count = 0
+    current_request_complete = False
+
+    def refresh_download_progress(*, active: bool) -> None:
+        _render_temperature_fetch_progress(
+            download_progress_placeholder,
+            total_locations=total_locations,
+            completed_locations=completed_locations,
+            current_location_index=current_location_index,
+            current_location_label=current_location_label,
+            current_detail=current_detail,
+            completed_request_batches=completed_request_batches,
+            current_request_index=current_request_index,
+            current_request_count=current_request_count,
+            current_request_complete=current_request_complete,
+            started_at=download_started_at,
+            active=active,
+        )
+
+    refresh_download_progress(active=True)
+
+    try:
+        location_frames = {}
+        for location_position, (location_key, period) in enumerate(unique_periods_by_location.items(), start=1):
+            current_location_index = location_position
+            current_location_label = period.display_name
+            current_detail = "Checking saved full timeline and missing months for this place."
+            current_request_index = 0
+            current_request_count = 0
+            current_request_complete = False
+            refresh_download_progress(active=True)
+
+            def _on_fetch_progress(
+                event: dict[str, object],
+                *,
+                location_label: str = period.display_name,
+                location_index: int = location_position,
+            ) -> None:
+                nonlocal completed_request_batches
+                nonlocal current_detail
+                nonlocal current_location_index
+                nonlocal current_location_label
+                nonlocal current_request_complete
+                nonlocal current_request_count
+                nonlocal current_request_index
+
+                current_location_index = location_index
+                current_location_label = location_label
+                stage = str(event.get("stage") or "")
+                request_count = int(event.get("request_count") or 0)
+                request_index = int(event.get("request_index") or 0)
+                if request_count > 0:
+                    current_request_count = request_count
+                if request_index > 0:
+                    current_request_index = request_index
+                if stage == "request_finished":
+                    completed_request_batches += 1
+                current_request_complete = stage in {
+                    "request_cache_hit",
+                    "request_finished",
+                    "point_fetch_completed",
+                    "missing_range_finished",
+                    "timeline_cache_hit",
+                    "timeline_fetch_completed",
+                }
+                current_detail = _describe_temperature_fetch_event(event)
+                refresh_download_progress(active=True)
+
+            location_frames[location_key] = fetch_saved_temperature_series(
+                config=active_cds_config,
+                latitude=period.latitude,
+                longitude=period.longitude,
+                start_date=dataset_window.min_start,
+                end_date=effective_report_end,
+                spatial_mode=spatial_mode,
+                radius_km=radius_km,
+                boundary_geojson=period.boundary_geojson,
+                boundary_bbox=period.bounding_box,
+                progress_callback=_on_fetch_progress,
+            )
+            completed_locations += 1
+            current_detail = f"{period.display_name} is ready."
+            current_request_complete = True
+            refresh_download_progress(active=completed_locations < total_locations)
+
+        period_frames = [location_frames[period.location_key] for period in periods_preview]
+    except (CDSRequestError, ValueError) as exc:
+        _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
+        current_detail = (
+            f"Stopped while loading {current_location_label or 'the selected places'}: {exc}"
+        )
+        current_request_complete = True
+        refresh_download_progress(active=False)
+        st.error(str(exc))
+        return
+
+    current_location_index = total_locations
+    current_location_label = "All selected places"
+    current_detail = "All requested ERA5-Land monthly series are ready."
+    current_request_index = 0
+    current_request_count = 0
+    current_request_complete = True
+    refresh_download_progress(active=False)
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
 
     _debug_print(

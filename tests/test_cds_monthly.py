@@ -178,6 +178,149 @@ class MonthlyCDSTests(unittest.TestCase):
         pd.testing.assert_frame_equal(second, aggregated)
 
 
+    def test_fetch_point_temperature_series_reports_request_progress(self) -> None:
+        events: list[dict[str, object]] = []
+
+        class FakeClient:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+
+            def retrieve(self, dataset_name: str, request: dict[str, object], target: str) -> None:
+                Path(target).write_bytes(b"CDF")
+
+        aggregated = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [1.5],
+                "sample_days": [31],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_cdsapi = SimpleNamespace(Client=FakeClient)
+            with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
+                with patch("mystripes.cds.parse_temperature_file", return_value=pd.DataFrame()):
+                    with patch("mystripes.cds._aggregate_spatial_selection", return_value=aggregated):
+                        frame = fetch_point_temperature_series(
+                            config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                            latitude=48.2082,
+                            longitude=16.3738,
+                            start_date=date(2020, 1, 1),
+                            end_date=date(2020, 2, 29),
+                            cache_dir=Path(tmpdir) / "cache",
+                            progress_callback=events.append,
+                        )
+
+        self.assertEqual(
+            [event["stage"] for event in events],
+            ["request_plan", "request_started", "request_finished", "point_fetch_completed"],
+        )
+        self.assertEqual(events[1]["request_index"], 1)
+        self.assertEqual(events[1]["request_count"], 1)
+        pd.testing.assert_frame_equal(frame, aggregated)
+
+    def test_fetch_saved_temperature_series_forwards_progress_events(self) -> None:
+        jan_feb = pd.DataFrame(
+            {
+                "timestamp": [
+                    pd.Timestamp("2020-01-01T00:00:00Z"),
+                    pd.Timestamp("2020-02-01T00:00:00Z"),
+                ],
+                "temperature_c": [1.5, 2.5],
+                "sample_days": [31, 29],
+            }
+        )
+        march = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-03-01T00:00:00Z")],
+                "temperature_c": [3.5],
+                "sample_days": [31],
+            }
+        )
+        events: list[dict[str, object]] = []
+
+        def fake_fetch(**kwargs):
+            progress_callback = kwargs.get("progress_callback")
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "stage": "request_plan",
+                        "request_count": 1,
+                        "start_date": kwargs["start_date"].isoformat(),
+                        "end_date": kwargs["end_date"].isoformat(),
+                    }
+                )
+                progress_callback(
+                    {
+                        "stage": "request_started",
+                        "request_index": 1,
+                        "request_count": 1,
+                        "request_year_start": "2020",
+                        "request_year_end": "2020",
+                        "month_count": 1,
+                    }
+                )
+                progress_callback(
+                    {
+                        "stage": "request_finished",
+                        "request_index": 1,
+                        "request_count": 1,
+                        "request_year_start": "2020",
+                        "request_year_end": "2020",
+                        "month_count": 1,
+                    }
+                )
+                progress_callback(
+                    {
+                        "stage": "point_fetch_completed",
+                        "request_count": 1,
+                    }
+                )
+            if kwargs["end_date"] == date(2020, 2, 29):
+                return jan_feb
+            return march
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "timeline-cache"
+            with patch("mystripes.cds.fetch_point_temperature_series", side_effect=fake_fetch):
+                fetch_saved_temperature_series(
+                    config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                    latitude=48.2082,
+                    longitude=16.3738,
+                    start_date=date(2020, 1, 1),
+                    end_date=date(2020, 2, 29),
+                    cache_dir=cache_dir,
+                    request_cache_dir=Path(tmpdir) / "request-cache",
+                    progress_callback=events.append,
+                )
+                events.clear()
+                fetch_saved_temperature_series(
+                    config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                    latitude=48.2082,
+                    longitude=16.3738,
+                    start_date=date(2020, 1, 1),
+                    end_date=date(2020, 3, 31),
+                    cache_dir=cache_dir,
+                    request_cache_dir=Path(tmpdir) / "request-cache",
+                    progress_callback=events.append,
+                )
+
+        self.assertEqual(
+            [event["stage"] for event in events],
+            [
+                "timeline_fetch_plan",
+                "missing_range_started",
+                "request_plan",
+                "request_started",
+                "request_finished",
+                "point_fetch_completed",
+                "missing_range_finished",
+                "timeline_fetch_completed",
+            ],
+        )
+        self.assertEqual(events[1]["range_start"], "2020-03-01")
+        self.assertEqual(events[4]["range_end"], "2020-03-31")
+
     def test_fetch_saved_temperature_series_only_fetches_missing_tail_months(self) -> None:
         jan_feb = pd.DataFrame(
             {

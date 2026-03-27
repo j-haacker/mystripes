@@ -6,7 +6,7 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 try:
     import tomllib
@@ -43,6 +43,21 @@ class CDSCredentialsMissingError(RuntimeError):
 
 class CDSRequestError(RuntimeError):
     """Raised when the CDS request cannot be completed."""
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _emit_progress(
+    progress_callback: ProgressCallback | None,
+    stage: str,
+    **payload: object,
+) -> None:
+    if progress_callback is None:
+        return
+    event = {"stage": stage}
+    event.update(payload)
+    progress_callback(event)
 
 
 def get_dataset_window() -> DatasetWindow:
@@ -130,6 +145,7 @@ def fetch_point_temperature_series(
     boundary_geojson: Mapping[str, Any] | None = None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
     cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     if start_date > end_date:
         raise ValueError("Start date must be on or before end date.")
@@ -151,6 +167,13 @@ def fetch_point_temperature_series(
         )
         cached_frame = _load_cached_temperature_series(cache_path)
         if cached_frame is not None:
+            _emit_progress(
+                progress_callback,
+                "request_cache_hit",
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_count=0,
+            )
             return cached_frame
 
     try:
@@ -173,17 +196,52 @@ def fetch_point_temperature_series(
         end_date=end_date,
         area=request_area,
     )
+    total_requests = len(requests_to_run)
+    _emit_progress(
+        progress_callback,
+        "request_plan",
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        request_count=total_requests,
+    )
     client = cdsapi.Client(url=config.url, key=config.key, quiet=True, progress=False)
     frames: list[pd.DataFrame] = []
     last_error: Exception | None = None
 
-    for request in requests_to_run:
+    for request_index, request in enumerate(requests_to_run, start=1):
+        request_years = [str(value) for value in request.get("year", [])]
+        request_months = [str(value) for value in request.get("month", [])]
+        request_year_start = request_years[0] if request_years else ""
+        request_year_end = request_years[-1] if request_years else ""
+        _emit_progress(
+            progress_callback,
+            "request_started",
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            request_index=request_index,
+            request_count=total_requests,
+            request_year_start=request_year_start,
+            request_year_end=request_year_end,
+            month_count=len(request_months),
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             target = Path(tmpdir) / "era5_land_monthly_request.nc"
             try:
                 client.retrieve(DATASET_NAME, request, str(target))
             except Exception as exc:  # pragma: no cover - depends on external service.
                 last_error = exc
+                _emit_progress(
+                    progress_callback,
+                    "request_failed",
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    request_index=request_index,
+                    request_count=total_requests,
+                    request_year_start=request_year_start,
+                    request_year_end=request_year_end,
+                    month_count=len(request_months),
+                    message=_explain_cds_error(exc),
+                )
                 break
 
             grid_frame = parse_temperature_file(
@@ -202,6 +260,17 @@ def fetch_point_temperature_series(
                     boundary_bbox=boundary_bbox,
                 )
             )
+        _emit_progress(
+            progress_callback,
+            "request_finished",
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            request_index=request_index,
+            request_count=total_requests,
+            request_year_start=request_year_start,
+            request_year_end=request_year_end,
+            month_count=len(request_months),
+        )
 
     if not frames:
         if last_error is not None:
@@ -212,6 +281,13 @@ def fetch_point_temperature_series(
     combined = combined.reset_index(drop=True)
     if cache_path is not None:
         _store_cached_temperature_series(cache_path, combined)
+    _emit_progress(
+        progress_callback,
+        "point_fetch_completed",
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        request_count=total_requests,
+    )
     return combined
 
 
@@ -227,6 +303,7 @@ def fetch_saved_temperature_series(
     boundary_bbox: tuple[float, float, float, float] | None = None,
     cache_dir: Path | None = TEMPERATURE_TIMELINE_CACHE_DIR,
     request_cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     if start_date > end_date:
         raise ValueError("Start date must be on or before end date.")
@@ -249,13 +326,49 @@ def fetch_saved_temperature_series(
     if not missing_ranges:
         if cached_frame is None:
             raise CDSRequestError("Saved temperature cache reported full coverage but no cached data was loaded.")
+        _emit_progress(
+            progress_callback,
+            "timeline_cache_hit",
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            missing_range_count=0,
+        )
         return _slice_temperature_series(cached_frame, start_date=start_date, end_date=end_date)
+
+    _emit_progress(
+        progress_callback,
+        "timeline_fetch_plan",
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        missing_range_count=len(missing_ranges),
+        has_cached_data=bool(cached_frame is not None and not cached_frame.empty),
+    )
 
     frames: list[pd.DataFrame] = []
     if cached_frame is not None and not cached_frame.empty:
         frames.append(cached_frame)
 
-    for missing_start, missing_end in missing_ranges:
+    total_missing_ranges = len(missing_ranges)
+    for range_index, (missing_start, missing_end) in enumerate(missing_ranges, start=1):
+        _emit_progress(
+            progress_callback,
+            "missing_range_started",
+            range_index=range_index,
+            range_count=total_missing_ranges,
+            range_start=missing_start.isoformat(),
+            range_end=missing_end.isoformat(),
+        )
+
+        def _forward_progress(event: dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            forwarded_event = dict(event)
+            forwarded_event.setdefault("range_index", range_index)
+            forwarded_event.setdefault("range_count", total_missing_ranges)
+            forwarded_event.setdefault("range_start", missing_start.isoformat())
+            forwarded_event.setdefault("range_end", missing_end.isoformat())
+            progress_callback(forwarded_event)
+
         frames.append(
             fetch_point_temperature_series(
                 config=config,
@@ -268,13 +381,29 @@ def fetch_saved_temperature_series(
                 boundary_geojson=boundary_geojson,
                 boundary_bbox=boundary_bbox,
                 cache_dir=request_cache_dir,
+                progress_callback=_forward_progress,
             )
+        )
+        _emit_progress(
+            progress_callback,
+            "missing_range_finished",
+            range_index=range_index,
+            range_count=total_missing_ranges,
+            range_start=missing_start.isoformat(),
+            range_end=missing_end.isoformat(),
         )
 
     combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
     combined = combined.reset_index(drop=True)
     if cache_path is not None:
         _store_cached_temperature_series(cache_path, combined)
+    _emit_progress(
+        progress_callback,
+        "timeline_fetch_completed",
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        missing_range_count=total_missing_ranges,
+    )
     return _slice_temperature_series(combined, start_date=start_date, end_date=end_date)
 
 

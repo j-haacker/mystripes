@@ -13,7 +13,7 @@ It is directly inspired by [Show Your Stripes](https://showyourstripes.info/), E
 
 The exported strips are intentionally lightweight, so they can be reused in email signatures, presentation decks, reports, posters, profile pages, and web embeds.
 
-MyStripes is an open, friendly project and new contributors are very welcome. Bug reports, docs fixes, tests, design ideas, and small code cleanups all help. You do not need to be an expert in climate science or Streamlit to join in. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+MyStripes is an open project and new contributors are very welcome. Ideas, bug reports, docs fixes, tests, and small code cleanups all help. You do not need to be an expert in climate science or Streamlit to join in. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Why this stack
 

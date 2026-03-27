@@ -1,5 +1,10 @@
 # MyStripes
 
+[![Open in Streamlit](https://img.shields.io/badge/Open%20in-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://mystripes.streamlit.app)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://github.com/j-haacker/mystripes/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/j-haacker/mystripes/blob/main/LICENSE)
+[![Data: ERA5-Land](https://img.shields.io/badge/Data-ERA5--Land-1F6FEB)](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means)
+
 ![MyStripes preview](https://raw.githubusercontent.com/j-haacker/mystripes/main/mystripes.png)
 
 MyStripes turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.

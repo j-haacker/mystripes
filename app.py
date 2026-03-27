@@ -313,8 +313,7 @@ def main() -> None:
         "to communicate the intensifying biodiversity crisis."
     )
     st.info(
-        "This is an open, welcoming project. Small fixes, docs improvements, tests, and "
-        f"ideas are all welcome: [contributing guide]({CONTRIBUTING_GUIDE_URL})."
+        f"Direct contributions and ideas are welcome: [contributing guide]({CONTRIBUTING_GUIDE_URL})."
     )
 
     _initialize_state(analysis_end)

@@ -221,19 +221,6 @@ def main() -> None:
 
     _render_credit_and_license_panel(today.year)
 
-    controls = st.columns((1, 1, 2))
-    if controls[0].button("Add period"):
-        _add_period_entry(analysis_end)
-        st.rerun()
-    if controls[1].button("Remove last period", disabled=len(st.session_state.period_entries) == 1):
-        _remove_period_entry()
-        st.rerun()
-    controls[2].caption(
-        "Enter one place per period. This works for personal life stations, study or work "
-        "phases, projects, tours, or any other place-based sequence. The app derives each "
-        "next period start date from the previous period end date."
-    )
-
     periods_preview, preview_errors = build_periods_from_entries(
         entries=st.session_state.period_entries,
         birth_date=birth_date,
@@ -257,12 +244,6 @@ def main() -> None:
         )
         expander_label = f"Period {index + 1}: {start_label} to {end_label}"
         with st.expander(expander_label, expanded=True):
-            entry["custom_label"] = st.text_input(
-                "Optional label",
-                value=entry["custom_label"],
-                key=f"custom_label_{index}",
-                placeholder="Childhood in Vienna, Berlin office, field season, current base...",
-            )
             entry["place_query"] = st.text_input(
                 "City or region",
                 value=entry["place_query"],
@@ -350,6 +331,19 @@ def main() -> None:
                 )
             else:
                 st.caption(f"Final period currently ends on `{analysis_end.isoformat()}`.")
+
+    controls = st.columns((1, 1, 2))
+    if controls[0].button("Add period"):
+        _add_period_entry(analysis_end)
+        st.rerun()
+    if controls[1].button("Remove last period", disabled=len(st.session_state.period_entries) == 1):
+        _remove_period_entry()
+        st.rerun()
+    controls[2].caption(
+        "Enter one place per period. This works for personal life stations, study or work "
+        "phases, projects, tours, or any other place-based sequence. The app derives each "
+        "next period start date from the previous period end date."
+    )
 
     for error in preview_errors:
         st.error(error)
@@ -703,7 +697,6 @@ def _configured_geoapify_api_key() -> str:
 
 def _blank_entry() -> dict[str, object]:
     return {
-        "custom_label": "",
         "place_query": "",
         "resolved_name": "",
         "latitude_text": "",

@@ -7,6 +7,10 @@ version = "0.1.0"
 [tasks]
 start = "streamlit run app.py"
 test = "python -m unittest discover -s tests"
+coverage-run = "python -m coverage run -m unittest discover -s tests"
+coverage = { depends-on = ["coverage-run"], cmd = "python -m coverage report -m" }
+coverage-html = { depends-on = ["coverage-run"], cmd = "python -m coverage html" }
+build = "python -m build"
 lock = "uv lock"
 
 [dependencies]
@@ -14,7 +18,9 @@ python = "3.12.*"
 uv = ">=0.10,<0.11"
 
 [pypi-dependencies]
+build = ">=1.2,<2"
 cdsapi = ">=0.7.7,<0.8"
+coverage = ">=7.6,<8"
 matplotlib = ">=3.8,<4"
 netCDF4 = ">=1.7,<2"
 numpy = ">=1.26,<3"

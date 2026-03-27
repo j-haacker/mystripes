@@ -48,11 +48,14 @@ This is meant to be a low-barrier project. Small contributions are genuinely use
    streamlit run app.py
    ```
 
-If you use Pixi, the repository also includes:
+If you use Pixi instead of pip, the repository also includes ready-to-run development tasks:
 
 ```bash
-pixi run test
 pixi run start
+pixi run test
+pixi run coverage
+pixi run coverage-html
+pixi run build
 ```
 
 ## Coverage

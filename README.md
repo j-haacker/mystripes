@@ -105,11 +105,14 @@ The first function accepts periods as dicts, lists, or pandas DataFrames, and mo
 
 ## Pixi
 
-If you use Pixi, this repository includes [pixi.toml](pixi.toml) with ready-to-run tasks:
+If you use Pixi, this repository includes [pixi.toml](pixi.toml) with the development tools and ready-to-run tasks:
 
 ```bash
 pixi run start
 pixi run test
+pixi run coverage
+pixi run coverage-html
+pixi run build
 pixi run lock
 ```
 

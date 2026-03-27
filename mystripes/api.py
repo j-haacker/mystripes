@@ -130,6 +130,7 @@ def plot_stripes(
     watermark_horizontal_align: WatermarkHorizontalAlign = "center",
     watermark_vertical_align: WatermarkVerticalAlign = "center",
     watermark_color: str = "#ffffff",
+    watermark_opacity: float = 0.35,
     watermark_max_width_ratio: float = 0.8,
     watermark_max_height_ratio: float = 0.8,
 ) -> Figure:
@@ -149,6 +150,7 @@ def plot_stripes(
         watermark_horizontal_align=watermark_horizontal_align,
         watermark_vertical_align=watermark_vertical_align,
         watermark_color=watermark_color,
+        watermark_opacity=watermark_opacity,
         watermark_max_width_ratio=watermark_max_width_ratio,
         watermark_max_height_ratio=watermark_max_height_ratio,
     )

@@ -47,6 +47,7 @@ def render_stripes_figure(
     watermark_horizontal_align: str = "center",
     watermark_vertical_align: str = "center",
     watermark_color: str = "#ffffff",
+    watermark_opacity: float = 0.35,
     watermark_max_width_ratio: float = 0.8,
     watermark_max_height_ratio: float = 0.8,
 ) -> plt.Figure:
@@ -77,6 +78,7 @@ def render_stripes_figure(
         horizontal_align=watermark_horizontal_align,
         vertical_align=watermark_vertical_align,
         color=watermark_color,
+        opacity=watermark_opacity,
         max_width_ratio=watermark_max_width_ratio,
         max_height_ratio=watermark_max_height_ratio,
     )
@@ -102,12 +104,15 @@ def _add_watermark(
     horizontal_align: str,
     vertical_align: str,
     color: str,
+    opacity: float,
     max_width_ratio: float,
     max_height_ratio: float,
 ) -> None:
     content = str(text or "").strip()
     if not content:
         return
+    if not 0 <= opacity <= 1:
+        raise ValueError("The watermark opacity must be between 0 and 1.")
     if not 0 < max_width_ratio <= 1:
         raise ValueError("The watermark maximum width ratio must be between 0 and 1.")
     if not 0 < max_height_ratio <= 1:
@@ -127,7 +132,7 @@ def _add_watermark(
         ha=text_horizontal_align,
         va=text_vertical_align,
         color=color,
-        alpha=0.35,
+        alpha=opacity,
         clip_on=True,
         fontsize=100,
         fontweight="bold",

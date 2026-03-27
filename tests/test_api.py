@@ -157,6 +157,7 @@ class PublicAPITests(unittest.TestCase):
             watermark_horizontal_align="right",
             watermark_vertical_align="bottom",
             watermark_color="#ff0000",
+            watermark_opacity=0.25,
             watermark_max_width_ratio=0.5,
             watermark_max_height_ratio=0.6,
         )
@@ -168,6 +169,7 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(watermark.get_horizontalalignment(), "right")
         self.assertEqual(watermark.get_verticalalignment(), "bottom")
         self.assertEqual(to_hex(watermark.get_color()), "#ff0000")
+        self.assertAlmostEqual(float(watermark.get_alpha()), 0.25, places=6)
         self.assertAlmostEqual(float(watermark.get_position()[0]), 0.98, places=6)
         self.assertAlmostEqual(float(watermark.get_position()[1]), 0.02, places=6)
 

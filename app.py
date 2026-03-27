@@ -408,6 +408,7 @@ def main() -> None:
     watermark_horizontal_align = "center"
     watermark_vertical_align = "center"
     watermark_color = "#FFFFFF"
+    watermark_opacity = 0.35
     watermark_max_width_ratio = 0.8
     watermark_max_height_ratio = 0.8
     if watermark_text.strip():
@@ -422,6 +423,16 @@ def main() -> None:
             format_func=lambda value: value.title(),
         )
         watermark_color = sidebar.color_picker("Watermark color", value=watermark_color)
+        watermark_opacity = float(
+            sidebar.slider(
+                "Watermark opacity",
+                min_value=0.0,
+                max_value=1.0,
+                value=watermark_opacity,
+                step=0.05,
+                format="%.2f",
+            )
+        )
         watermark_max_width_ratio = float(
             sidebar.slider(
                 "Watermark max width",
@@ -656,6 +667,7 @@ def main() -> None:
                 "horizontal_align": watermark_horizontal_align,
                 "vertical_align": watermark_vertical_align,
                 "color": watermark_color,
+                "opacity": watermark_opacity,
                 "max_width_ratio": watermark_max_width_ratio,
                 "max_height_ratio": watermark_max_height_ratio,
             },
@@ -764,6 +776,7 @@ def main() -> None:
         watermark_horizontal_align=watermark_horizontal_align,
         watermark_vertical_align=watermark_vertical_align,
         watermark_color=watermark_color,
+        watermark_opacity=watermark_opacity,
         watermark_max_width_ratio=watermark_max_width_ratio,
         watermark_max_height_ratio=watermark_max_height_ratio,
     )

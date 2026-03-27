@@ -34,6 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "build>=1.2",
+  "coverage>=7.6",
   "twine>=5.1",
 ]
 
@@ -44,3 +45,12 @@ Issues = "https://github.com/j-haacker/mystripes/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mystripes"]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["mystripes"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

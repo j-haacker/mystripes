@@ -9,3 +9,7 @@ dist/
 *.egg-info/
 pixi.lock
 .streamlit/local_storylines.json
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

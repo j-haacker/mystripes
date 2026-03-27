@@ -22,19 +22,27 @@ This is meant to be a low-barrier project. Small contributions are genuinely use
 
 ## Local setup
 
-1. Install the dependencies:
+1. Install the app dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-2. Run the tests:
+2. Install the contributor tools:
+
+   ```bash
+   pip install -e .[dev]
+   ```
+
+   This adds the local package plus tools such as coverage.
+
+3. Run the tests:
 
    ```bash
    python -m unittest discover -s tests
    ```
 
-3. Optionally run the app locally:
+4. Optionally run the app locally:
 
    ```bash
    streamlit run app.py
@@ -65,6 +73,8 @@ python -m coverage html
 Then open `htmlcov/index.html` in a browser.
 
 ## Pull request tips
+
+GitHub Actions runs the unit tests and a coverage summary on pushes and pull requests, so you should get quick feedback after opening a PR.
 
 - Add or update tests when behavior changes.
 - Keep commit messages short and descriptive.

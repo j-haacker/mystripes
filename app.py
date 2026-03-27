@@ -170,6 +170,48 @@ def main() -> None:
     width_px = int(sidebar.number_input("Width (px)", min_value=100, max_value=6000, value=1800, step=100))
     height_px = int(sidebar.number_input("Height (px)", min_value=20, max_value=2400, value=260, step=20))
     png_dpi = int(sidebar.number_input("PNG DPI", min_value=10, max_value=600, value=200, step=10))
+    watermark_text = sidebar.text_input(
+        "Watermark text",
+        value="",
+        help="Optional text rendered over the stripes graphic.",
+    )
+    watermark_horizontal_align = "center"
+    watermark_vertical_align = "center"
+    watermark_color = "#FFFFFF"
+    watermark_max_width_ratio = 0.8
+    watermark_max_height_ratio = 0.8
+    if watermark_text.strip():
+        watermark_horizontal_align = sidebar.selectbox(
+            "Watermark horizontal align",
+            options=("left", "center", "right"),
+            format_func=lambda value: value.title(),
+        )
+        watermark_vertical_align = sidebar.selectbox(
+            "Watermark vertical align",
+            options=("top", "center", "bottom"),
+            format_func=lambda value: value.title(),
+        )
+        watermark_color = sidebar.color_picker("Watermark color", value=watermark_color)
+        watermark_max_width_ratio = float(
+            sidebar.slider(
+                "Watermark max width",
+                min_value=0.1,
+                max_value=1.0,
+                value=watermark_max_width_ratio,
+                step=0.05,
+                format="%.2f",
+            )
+        )
+        watermark_max_height_ratio = float(
+            sidebar.slider(
+                "Watermark max height",
+                min_value=0.1,
+                max_value=1.0,
+                value=watermark_max_height_ratio,
+                step=0.05,
+                format="%.2f",
+            )
+        )
     file_stem = sidebar.text_input("Download name", value="mystripes")
     debug_mode = sidebar.checkbox(
         "Debug mode",
@@ -378,6 +420,14 @@ def main() -> None:
             "rolling_sample_mode": rolling_sample_mode,
             "rolling_strip_count": rolling_strip_count,
             "cds_source": active_cds_config.source,
+            "watermark": {
+                "text": watermark_text,
+                "horizontal_align": watermark_horizontal_align,
+                "vertical_align": watermark_vertical_align,
+                "color": watermark_color,
+                "max_width_ratio": watermark_max_width_ratio,
+                "max_height_ratio": watermark_max_height_ratio,
+            },
             "periods": [
                 {
                     "label": period.label,
@@ -479,6 +529,12 @@ def main() -> None:
         anomalies=stripe_frame["anomaly_c"].tolist(),
         width_inches=width_inches,
         height_inches=height_inches,
+        watermark_text=watermark_text or None,
+        watermark_horizontal_align=watermark_horizontal_align,
+        watermark_vertical_align=watermark_vertical_align,
+        watermark_color=watermark_color,
+        watermark_max_width_ratio=watermark_max_width_ratio,
+        watermark_max_height_ratio=watermark_max_height_ratio,
     )
 
     png_bytes = export_figure_bytes(figure, "png", png_dpi)

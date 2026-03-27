@@ -18,6 +18,8 @@ from mystripes.processing import (
 
 AggregationMode = Literal["full_calendar_years", "rolling_365_day"]
 RollingSampleMode = Literal["monthly", "fixed_count"]
+WatermarkHorizontalAlign = Literal["left", "center", "right"]
+WatermarkVerticalAlign = Literal["bottom", "center", "top"]
 
 
 def build_stripe_data(
@@ -124,10 +126,18 @@ def plot_stripes(
     dpi: int = 200,
     output_path: str | Path | None = None,
     fmt: Literal["png", "svg", "pdf"] | None = None,
+    watermark_text: str | None = None,
+    watermark_horizontal_align: WatermarkHorizontalAlign = "center",
+    watermark_vertical_align: WatermarkVerticalAlign = "center",
+    watermark_color: str = "#ffffff",
+    watermark_max_width_ratio: float = 0.8,
+    watermark_max_height_ratio: float = 0.8,
 ) -> Figure:
     """Plot stripes from the bundle returned by `build_stripe_data`.
 
-    If `output_path` is provided, the figure is also saved there.
+    If `output_path` is provided, the figure is also saved there. Provide
+    `watermark_text` and the other watermark arguments to overlay a fitted
+    text watermark over the stripes graphic.
     """
 
     stripe_frame = _extract_stripe_frame(stripe_data)
@@ -135,6 +145,12 @@ def plot_stripes(
         anomalies=stripe_frame["anomaly_c"].astype(float).tolist(),
         width_inches=width_px / dpi,
         height_inches=height_px / dpi,
+        watermark_text=watermark_text,
+        watermark_horizontal_align=watermark_horizontal_align,
+        watermark_vertical_align=watermark_vertical_align,
+        watermark_color=watermark_color,
+        watermark_max_width_ratio=watermark_max_width_ratio,
+        watermark_max_height_ratio=watermark_max_height_ratio,
     )
 
     if output_path is not None:

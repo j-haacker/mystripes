@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+from matplotlib.colors import to_hex
 
 from mystripes.api import build_stripe_data, plot_stripes
 
@@ -136,6 +137,47 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(stripe_data["baseline_end"], date(2000, 12, 31))
         self.assertEqual(stripe_data["stripe_frame"]["baseline_c"].round(2).tolist(), [10.0])
         self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0])
+
+    def test_plot_stripes_supports_fitted_watermark(self) -> None:
+        stripe_data = {
+            "stripe_frame": pd.DataFrame(
+                {
+                    "year": [2000, 2001, 2002],
+                    "anomaly_c": [-1.0, 0.0, 1.0],
+                }
+            )
+        }
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=100,
+            dpi=100,
+            watermark_text="TEST",
+            watermark_horizontal_align="right",
+            watermark_vertical_align="bottom",
+            watermark_color="#ff0000",
+            watermark_max_width_ratio=0.5,
+            watermark_max_height_ratio=0.6,
+        )
+
+        axis = figure.axes[0]
+        self.assertEqual(len(axis.texts), 1)
+        watermark = axis.texts[0]
+        self.assertEqual(watermark.get_text(), "TEST")
+        self.assertEqual(watermark.get_horizontalalignment(), "right")
+        self.assertEqual(watermark.get_verticalalignment(), "bottom")
+        self.assertEqual(to_hex(watermark.get_color()), "#ff0000")
+        self.assertAlmostEqual(float(watermark.get_position()[0]), 0.98, places=6)
+        self.assertAlmostEqual(float(watermark.get_position()[1]), 0.02, places=6)
+
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        axis_box = axis.get_window_extent(renderer=renderer)
+        text_box = watermark.get_window_extent(renderer=renderer)
+        self.assertLessEqual(text_box.width, (axis_box.width * 0.5) + 1.0)
+        self.assertLessEqual(text_box.height, (axis_box.height * 0.6) + 1.0)
+        figure.clf()
 
     def test_plot_stripes_can_save_svg(self) -> None:
         stripe_data = {

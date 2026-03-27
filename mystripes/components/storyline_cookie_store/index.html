@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      (function () {
+        const COMPONENT_READY = "streamlit:componentReady";
+        const SET_COMPONENT_VALUE = "streamlit:setComponentValue";
+        const SET_FRAME_HEIGHT = "streamlit:setFrameHeight";
+        const RENDER = "streamlit:render";
+        const API_VERSION = 1;
+
+        let lastHandledOperationId = "";
+        let lastSentCookiesJson = null;
+        let lastSentError = "";
+        let lastSentCompletedOperationId = "";
+
+        function sendMessage(type, payload) {
+          window.parent.postMessage(
+            Object.assign({ isStreamlitMessage: true, type: type }, payload || {}),
+            "*",
+          );
+        }
+
+        function setComponentReady() {
+          sendMessage(COMPONENT_READY, { apiVersion: API_VERSION });
+        }
+
+        function setFrameHeight(height) {
+          sendMessage(SET_FRAME_HEIGHT, { height: height });
+        }
+
+        function setComponentValue(value) {
+          sendMessage(SET_COMPONENT_VALUE, { value: value });
+        }
+
+        function readCookies(prefix) {
+          const mapping = {};
+          const rawCookieString = document.cookie || "";
+          if (!rawCookieString) {
+            return mapping;
+          }
+
+          for (const part of rawCookieString.split(/;\s*/)) {
+            if (!part) {
+              continue;
+            }
+            const equalsIndex = part.indexOf("=");
+            const name = equalsIndex === -1 ? part : part.slice(0, equalsIndex);
+            if (!name.startsWith(prefix)) {
+              continue;
+            }
+            const value = equalsIndex === -1 ? "" : part.slice(equalsIndex + 1);
+            mapping[name] = value;
+          }
+          return mapping;
+        }
+
+        function writeCookie(name, value, maxAgeSeconds) {
+          document.cookie = `${name}=${value}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; Secure`;
+        }
+
+        function deleteCookie(name) {
+          document.cookie = `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Secure`;
+        }
+
+        function maybeSendState(prefix, completedOperationId, error) {
+          const cookies = readCookies(prefix);
+          const cookiesJson = JSON.stringify(cookies);
+          const completionId = completedOperationId || "";
+          const messageError = error || "";
+          const shouldSend =
+            cookiesJson !== lastSentCookiesJson ||
+            messageError !== lastSentError ||
+            (completionId && completionId !== lastSentCompletedOperationId);
+
+          if (!shouldSend) {
+            return;
+          }
+
+          setComponentValue({
+            cookies: cookies,
+            completed_operation_id: completionId || null,
+            error: messageError || null,
+          });
+          lastSentCookiesJson = cookiesJson;
+          lastSentError = messageError;
+          if (completionId) {
+            lastSentCompletedOperationId = completionId;
+          }
+        }
+
+        function handleRender(event) {
+          const data = event.data || {};
+          if (data.type !== RENDER) {
+            return;
+          }
+
+          const args = data.args || {};
+          const prefix = typeof args.cookie_prefix === "string" ? args.cookie_prefix : "";
+          const maxAgeSeconds = Number(args.max_age_seconds || 0);
+          const operation = args.operation && typeof args.operation === "object" ? args.operation : null;
+          let completedOperationId = "";
+          let error = "";
+
+          try {
+            if (
+              operation &&
+              typeof operation.id === "string" &&
+              operation.id &&
+              operation.id !== lastHandledOperationId
+            ) {
+              if (operation.action === "save") {
+                writeCookie(String(operation.cookie_name || ""), String(operation.cookie_value || ""), maxAgeSeconds);
+              } else if (operation.action === "remove") {
+                deleteCookie(String(operation.cookie_name || ""));
+              }
+              lastHandledOperationId = operation.id;
+              completedOperationId = operation.id;
+            }
+          } catch (caughtError) {
+            completedOperationId = operation && typeof operation.id === "string" ? operation.id : "";
+            error = caughtError instanceof Error ? caughtError.message : String(caughtError);
+          }
+
+          maybeSendState(prefix, completedOperationId, error);
+          setFrameHeight(0);
+        }
+
+        window.addEventListener("message", handleRender);
+        setComponentReady();
+        setFrameHeight(0);
+      })();
+    </script>
+  </body>
+</html>

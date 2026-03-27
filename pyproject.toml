@@ -27,6 +27,7 @@ dependencies = [
   "netCDF4>=1.7",
   "numpy>=1.26",
   "pandas>=2.2",
+  "pyarrow>=20",
   "requests>=2.32",
   "streamlit>=1.40",
 ]

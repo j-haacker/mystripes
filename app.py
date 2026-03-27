@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from uuid import uuid4
 from pprint import pformat
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from mystripes.cds import (
     CDSCredentialsMissingError,
@@ -46,9 +46,9 @@ from mystripes.processing import (
     build_period_report_tables,
     build_periods_from_entries,
 )
+from mystripes.storyline_cookie_component import sync_storyline_cookie_store
 from mystripes.storylines import (
     LOCAL_STORYLINES_PATH,
-    build_cookie_sync_html,
     encode_storyline_cookie_value,
     load_cookie_storylines,
     load_local_storylines,
@@ -89,11 +89,16 @@ def _storyline_storage_backend() -> str:
     return storyline_storage_backend_from_host(host)
 
 
+def _cookie_storyline_values() -> dict[str, str]:
+    raw_values = st.session_state.get("storyline_cookie_values", {})
+    if not isinstance(raw_values, dict):
+        return {}
+    return {str(name): str(value) for name, value in raw_values.items()}
+
+
 def _load_saved_storylines(storage_backend: str) -> dict[str, dict[str, object]]:
     if storage_backend == "cookie":
-        cookies = getattr(st.context, "cookies", None)
-        cookie_mapping = cookies.to_dict() if cookies is not None else {}
-        return load_cookie_storylines(cookie_mapping)
+        return load_cookie_storylines(_cookie_storyline_values())
     return load_local_storylines()
 
 
@@ -117,6 +122,24 @@ def _render_storyline_feedback(sidebar) -> None:
         sidebar.info(message)
 
 
+def _queue_cookie_storyline_operation(
+    *,
+    action: str,
+    storyline_name: str,
+    cookie_name: str,
+    cookie_value: str | None = None,
+) -> None:
+    operation = {
+        "id": uuid4().hex,
+        "action": action,
+        "storyline_name": storyline_name,
+        "cookie_name": cookie_name,
+    }
+    if cookie_value is not None:
+        operation["cookie_value"] = cookie_value
+    st.session_state.pending_storyline_cookie_operation = operation
+
+
 def _queue_storyline_widget_update(key: str, value: object) -> None:
     st.session_state[f"_pending_{key}"] = "" if value is None else str(value)
 
@@ -126,6 +149,49 @@ def _apply_pending_storyline_widget_updates() -> None:
         pending_key = f"_pending_{key}"
         if pending_key in st.session_state:
             st.session_state[key] = st.session_state.pop(pending_key)
+
+
+def _sync_cookie_storyline_store() -> None:
+    result = sync_storyline_cookie_store(
+        operation=st.session_state.get("pending_storyline_cookie_operation"),
+        key="storyline_cookie_store",
+    )
+    if not isinstance(result, dict):
+        return
+
+    raw_cookies = result.get("cookies", {})
+    if isinstance(raw_cookies, dict):
+        st.session_state.storyline_cookie_values = {
+            str(name): str(value)
+            for name, value in raw_cookies.items()
+        }
+
+    pending_operation = st.session_state.get("pending_storyline_cookie_operation")
+    if not isinstance(pending_operation, dict):
+        return
+
+    completed_operation_id = str(result.get("completed_operation_id") or "")
+    if completed_operation_id != str(pending_operation.get("id") or ""):
+        return
+
+    st.session_state.pending_storyline_cookie_operation = None
+    error_message = str(result.get("error") or "").strip()
+    storyline_name = str(pending_operation.get("storyline_name") or "").strip()
+    if error_message:
+        _set_storyline_feedback("error", error_message)
+        st.rerun()
+
+    action = str(pending_operation.get("action") or "")
+    if action == "save":
+        _queue_storyline_widget_update("storyline_name", storyline_name)
+        _queue_storyline_widget_update("saved_storyline_name", storyline_name)
+        _set_storyline_feedback("success", f"Saved story line `{storyline_name}`.")
+    elif action == "remove":
+        if st.session_state.storyline_name == storyline_name:
+            _queue_storyline_widget_update("storyline_name", "")
+        _queue_storyline_widget_update("saved_storyline_name", "")
+        _set_storyline_feedback("success", f"Removed story line `{storyline_name}`.")
+    st.rerun()
 
 
 def _current_storyline_period_entries() -> list[dict[str, object]]:
@@ -204,6 +270,8 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
     storage_backend = _storyline_storage_backend()
     _render_storyline_feedback(sidebar)
     _apply_pending_storyline_widget_updates()
+    if storage_backend == "cookie":
+        _sync_cookie_storyline_store()
 
     try:
         saved_storylines = _load_saved_storylines(storage_backend)
@@ -251,6 +319,10 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
 
         if storage_backend == "file":
             st.caption(f"Local story lines are written to `{LOCAL_STORYLINES_PATH}` on this machine.")
+        else:
+            st.caption(_cookie_storage_note())
+            if st.session_state.get("pending_storyline_cookie_operation"):
+                st.caption("Syncing saved story lines in this browser...")
 
         if save_requested:
             try:
@@ -260,18 +332,20 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
                     period_entries=_current_storyline_period_entries(),
                     include_boundary_geojson=storage_backend == "file",
                 )
-                _queue_storyline_widget_update("storyline_name", payload["name"])
-                _queue_storyline_widget_update("saved_storyline_name", payload["name"])
                 if storage_backend == "file":
+                    _queue_storyline_widget_update("storyline_name", payload["name"])
+                    _queue_storyline_widget_update("saved_storyline_name", payload["name"])
                     save_local_storyline(payload)
                     _set_storyline_feedback("success", f"Saved story line `{payload['name']}`.")
                     st.rerun()
 
-                cookie_name = storyline_cookie_name(payload["name"])
-                cookie_value = encode_storyline_cookie_value(payload)
-                st.info(_cookie_storage_note())
-                components.html(build_cookie_sync_html(cookie_name, cookie_value), height=0, width=0)
-                st.stop()
+                _queue_cookie_storyline_operation(
+                    action="save",
+                    storyline_name=str(payload["name"]),
+                    cookie_name=storyline_cookie_name(payload["name"]),
+                    cookie_value=encode_storyline_cookie_value(payload),
+                )
+                st.rerun()
             except Exception as exc:
                 st.error(str(exc))
 
@@ -295,15 +369,12 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
                         st.rerun()
                     st.error(f"No saved story line named `{selected_storyline_name}` was found.")
                 else:
-                    if st.session_state.storyline_name == selected_storyline_name:
-                        _queue_storyline_widget_update("storyline_name", "")
-                    _queue_storyline_widget_update("saved_storyline_name", "")
-                    components.html(
-                        build_cookie_sync_html(storyline_cookie_name(selected_storyline_name), None),
-                        height=0,
-                        width=0,
+                    _queue_cookie_storyline_operation(
+                        action="remove",
+                        storyline_name=selected_storyline_name,
+                        cookie_name=storyline_cookie_name(selected_storyline_name),
                     )
-                    st.stop()
+                    st.rerun()
             except Exception as exc:
                 st.error(str(exc))
 
@@ -974,6 +1045,10 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.storyline_name = ""
     if "saved_storyline_name" not in st.session_state:
         st.session_state.saved_storyline_name = ""
+    if "storyline_cookie_values" not in st.session_state:
+        st.session_state.storyline_cookie_values = {}
+    if "pending_storyline_cookie_operation" not in st.session_state:
+        st.session_state.pending_storyline_cookie_operation = None
 
 
 def _configured_geoapify_api_key() -> str:

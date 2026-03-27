@@ -19,6 +19,15 @@ from mystripes.cds import (
     resolve_cds_config,
     save_local_cds_config,
 )
+from mystripes.cookie_consent import (
+    COOKIE_CONSENT_COOKIE_NAME,
+    COOKIE_CONSENT_MAX_AGE_SECONDS,
+    build_cookie_consent_payload,
+    cookie_consent_choice,
+    decode_cookie_consent_value,
+    encode_cookie_consent_value,
+    optional_cookie_consent_granted,
+)
 from mystripes.geocoding import search_places
 from mystripes.gistemp import (
     NASA_GISTEMP_GLOBAL_MEAN_URL,
@@ -29,6 +38,7 @@ from mystripes.models import CDSConfig
 from mystripes.notices import (
     CONTRIBUTING_GUIDE_URL,
     PROJECT_ISSUES_URL,
+    PROJECT_REPOSITORY_URL,
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
@@ -49,6 +59,8 @@ from mystripes.processing import (
 from mystripes.storyline_cookie_component import sync_storyline_cookie_store
 from mystripes.storylines import (
     LOCAL_STORYLINES_PATH,
+    STORYLINE_COOKIE_MAX_AGE_SECONDS,
+    STORYLINE_COOKIE_PREFIX,
     encode_storyline_cookie_value,
     load_cookie_storylines,
     load_local_storylines,
@@ -96,8 +108,23 @@ def _cookie_storyline_values() -> dict[str, str]:
     return {str(name): str(value) for name, value in raw_values.items()}
 
 
+def _cookie_consent_payload_from_session() -> dict[str, object] | None:
+    raw_payload = st.session_state.get("cookie_consent_payload")
+    return dict(raw_payload) if isinstance(raw_payload, dict) else None
+
+
+def _cloud_cookie_consent_choice() -> str | None:
+    return cookie_consent_choice(_cookie_consent_payload_from_session())
+
+
+def _cloud_storyline_storage_enabled() -> bool:
+    return optional_cookie_consent_granted(_cookie_consent_payload_from_session())
+
+
 def _load_saved_storylines(storage_backend: str) -> dict[str, dict[str, object]]:
     if storage_backend == "cookie":
+        if not _cloud_storyline_storage_enabled():
+            return {}
         return load_cookie_storylines(_cookie_storyline_values())
     return load_local_storylines()
 
@@ -129,15 +156,55 @@ def _queue_cookie_storyline_operation(
     cookie_name: str,
     cookie_value: str | None = None,
 ) -> None:
-    operation = {
+    if action == "save":
+        if cookie_value is None:
+            raise ValueError("Missing cookie value for save operation.")
+        cookie_operations = [
+            {
+                "action": "set",
+                "cookie_name": cookie_name,
+                "cookie_value": cookie_value,
+                "max_age_seconds": STORYLINE_COOKIE_MAX_AGE_SECONDS,
+            }
+        ]
+    elif action == "remove":
+        cookie_operations = [{"action": "remove", "cookie_name": cookie_name}]
+    else:
+        raise ValueError(f"Unsupported storyline cookie action: {action}")
+
+    st.session_state.pending_cookie_store_operation = {
         "id": uuid4().hex,
+        "kind": "storyline",
         "action": action,
         "storyline_name": storyline_name,
-        "cookie_name": cookie_name,
+        "cookie_operations": cookie_operations,
     }
-    if cookie_value is not None:
-        operation["cookie_value"] = cookie_value
-    st.session_state.pending_storyline_cookie_operation = operation
+
+
+def _queue_cookie_consent_operation(choice: str) -> None:
+    payload = build_cookie_consent_payload(choice)
+    cookie_operations: list[dict[str, object]] = [
+        {
+            "action": "set",
+            "cookie_name": COOKIE_CONSENT_COOKIE_NAME,
+            "cookie_value": encode_cookie_consent_value(payload),
+            "max_age_seconds": COOKIE_CONSENT_MAX_AGE_SECONDS,
+        }
+    ]
+    if payload["choice"] == "rejected":
+        cookie_operations.append(
+            {
+                "action": "remove_prefix",
+                "cookie_prefix": STORYLINE_COOKIE_PREFIX,
+            }
+        )
+
+    st.session_state.pending_cookie_store_operation = {
+        "id": uuid4().hex,
+        "kind": "consent",
+        "choice": payload["choice"],
+        "cookie_operations": cookie_operations,
+    }
 
 
 def _queue_storyline_widget_update(key: str, value: object) -> None:
@@ -151,36 +218,72 @@ def _apply_pending_storyline_widget_updates() -> None:
             st.session_state[key] = st.session_state.pop(pending_key)
 
 
-def _sync_cookie_storyline_store() -> None:
+def _sync_cookie_store() -> None:
+    previous_choice = _cloud_cookie_consent_choice()
+    monitor_storyline_cookies = previous_choice == "accepted"
     result = sync_storyline_cookie_store(
-        operation=st.session_state.get("pending_storyline_cookie_operation"),
+        monitored_cookie_names=[COOKIE_CONSENT_COOKIE_NAME],
+        monitored_cookie_prefixes=[STORYLINE_COOKIE_PREFIX] if monitor_storyline_cookies else [],
+        operation=st.session_state.get("pending_cookie_store_operation"),
         key="storyline_cookie_store",
     )
     if not isinstance(result, dict):
         return
 
     raw_cookies = result.get("cookies", {})
+    normalized_cookies = {}
     if isinstance(raw_cookies, dict):
-        st.session_state.storyline_cookie_values = {
+        normalized_cookies = {
             str(name): str(value)
             for name, value in raw_cookies.items()
         }
 
-    pending_operation = st.session_state.get("pending_storyline_cookie_operation")
+    st.session_state.storyline_cookie_values = {
+        name: value
+        for name, value in normalized_cookies.items()
+        if name.startswith(STORYLINE_COOKIE_PREFIX)
+    }
+
+    consent_cookie_value = normalized_cookies.get(COOKIE_CONSENT_COOKIE_NAME, "")
+    if consent_cookie_value:
+        try:
+            st.session_state.cookie_consent_payload = decode_cookie_consent_value(consent_cookie_value)
+        except ValueError:
+            st.session_state.cookie_consent_payload = None
+    else:
+        st.session_state.cookie_consent_payload = None
+
+    pending_operation = st.session_state.get("pending_cookie_store_operation")
+    current_choice = _cloud_cookie_consent_choice()
     if not isinstance(pending_operation, dict):
+        if current_choice == "accepted" and not monitor_storyline_cookies:
+            st.rerun()
         return
 
     completed_operation_id = str(result.get("completed_operation_id") or "")
     if completed_operation_id != str(pending_operation.get("id") or ""):
         return
 
-    st.session_state.pending_storyline_cookie_operation = None
+    st.session_state.pending_cookie_store_operation = None
     error_message = str(result.get("error") or "").strip()
-    storyline_name = str(pending_operation.get("storyline_name") or "").strip()
     if error_message:
         _set_storyline_feedback("error", error_message)
         st.rerun()
 
+    operation_kind = str(pending_operation.get("kind") or "")
+    if operation_kind == "consent":
+        if current_choice == "accepted":
+            _set_storyline_feedback("success", "Optional convenience cookies enabled in this browser.")
+        else:
+            st.session_state.storyline_cookie_values = {}
+            _queue_storyline_widget_update("saved_storyline_name", "")
+            _set_storyline_feedback(
+                "info",
+                "Optional convenience cookies disabled. Any saved cloud story lines were removed from this browser.",
+            )
+        st.rerun()
+
+    storyline_name = str(pending_operation.get("storyline_name") or "").strip()
     action = str(pending_operation.get("action") or "")
     if action == "save":
         _queue_storyline_widget_update("storyline_name", storyline_name)
@@ -258,20 +361,78 @@ def _apply_storyline_to_session(payload: dict[str, object], analysis_end: date) 
             st.session_state[f"end_date_{index}"] = entry["end_date"]
 
 
-def _cookie_storage_note() -> str:
+def _cookie_consent_copy() -> str:
     return (
-        "On Streamlit Community Cloud, saved story lines are stored in browser cookies that "
-        "stay on your machine. Aside from those cookies and the requests needed to use the "
-        "app, it generally does not store user data for you."
+        "On Streamlit Community Cloud, MyStripes can optionally store your story line name "
+        "and place-period timeline entries in browser cookies so you can load them later. "
+        "The app does not collect or retain user data for itself. Any cookie-stored data "
+        "stays on your machine and only aids convenience. MyStripes is open-source on "
+        f"[GitHub]({PROJECT_REPOSITORY_URL})."
     )
 
 
-def _render_storyline_panel(sidebar, analysis_end: date) -> None:
-    storage_backend = _storyline_storage_backend()
+def _cookie_storage_note() -> str:
+    return (
+        "Saved cloud story lines use optional browser cookies that stay on this machine. "
+        "The app does not collect or retain user data for itself, and the cookies only aid "
+        "convenience."
+    )
+
+
+def _render_cookie_consent_banner(storage_backend: str) -> None:
+    if storage_backend != "cookie" or _cloud_cookie_consent_choice() is not None:
+        return
+
+    with st.container(border=True):
+        st.markdown("**Cookie choice for saved story lines**")
+        st.markdown(_cookie_consent_copy())
+        st.caption(
+            "These optional convenience cookies are off until you choose below. Rejecting "
+            "keeps save-load-remove hidden on Streamlit Community Cloud. You can change this "
+            "later in Cookie settings in the sidebar."
+        )
+        if st.session_state.get("pending_cookie_store_operation"):
+            st.caption("Updating the cookie choice in this browser...")
+        accept_column, reject_column = st.columns(2)
+        if accept_column.button("Allow convenience cookies", key="cookie_banner_accept"):
+            _queue_cookie_consent_operation("accepted")
+            st.rerun()
+        if reject_column.button("Reject optional cookies", key="cookie_banner_reject"):
+            _queue_cookie_consent_operation("rejected")
+            st.rerun()
+
+
+def _render_cookie_settings(sidebar, storage_backend: str) -> None:
+    if storage_backend != "cookie":
+        return
+
+    consent_choice = _cloud_cookie_consent_choice()
+    with sidebar.expander("Cookie settings", expanded=consent_choice is None):
+        st.markdown(_cookie_consent_copy())
+        st.caption(
+            "You can change this choice at any time here. Rejecting optional convenience "
+            "cookies removes saved cloud story lines from this browser."
+        )
+        if consent_choice == "accepted":
+            st.success("Optional convenience cookies are enabled in this browser.")
+        elif consent_choice == "rejected":
+            st.info("Optional convenience cookies are disabled in this browser.")
+        else:
+            st.warning("Optional convenience cookies are not enabled yet.")
+        if st.session_state.get("pending_cookie_store_operation"):
+            st.caption("Updating the cookie choice in this browser...")
+        accept_column, reject_column = st.columns(2)
+        if accept_column.button("Allow convenience cookies", key="cookie_settings_accept"):
+            _queue_cookie_consent_operation("accepted")
+            st.rerun()
+        if reject_column.button("Reject optional cookies", key="cookie_settings_reject"):
+            _queue_cookie_consent_operation("rejected")
+            st.rerun()
+
+
+def _render_storyline_panel(sidebar, analysis_end: date, storage_backend: str) -> None:
     _render_storyline_feedback(sidebar)
     _apply_pending_storyline_widget_updates()
-    if storage_backend == "cookie":
-        _sync_cookie_storyline_store()
 
     try:
         saved_storylines = _load_saved_storylines(storage_backend)
@@ -279,11 +440,30 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
         sidebar.error(f"Could not load saved story lines: {exc}")
         saved_storylines = {}
 
-    with sidebar.expander("Story lines", expanded=bool(saved_storylines)):
+    cloud_storage_enabled = storage_backend != "cookie" or _cloud_storyline_storage_enabled()
+    expander_expanded = bool(saved_storylines) or not cloud_storage_enabled
+
+    with sidebar.expander("Story lines", expanded=expander_expanded):
         st.caption(
             "Save, reload, and remove place-based story lines so you can revisit the same "
             "timeline later."
         )
+
+        if storage_backend == "cookie" and not cloud_storage_enabled:
+            if _cloud_cookie_consent_choice() == "rejected":
+                st.info(
+                    "Optional convenience cookies are currently disabled in this browser. Use "
+                    "Cookie settings above if you want to save or reload story lines here."
+                )
+            else:
+                st.info(
+                    "On Streamlit Community Cloud, save-load-remove uses optional convenience "
+                    "cookies. Choose in Cookie settings above if you want this feature in this "
+                    "browser."
+                )
+            st.caption(_cookie_storage_note())
+            return
+
         st.text_input(
             "Story line name",
             key="storyline_name",
@@ -321,7 +501,7 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
             st.caption(f"Local story lines are written to `{LOCAL_STORYLINES_PATH}` on this machine.")
         else:
             st.caption(_cookie_storage_note())
-            if st.session_state.get("pending_storyline_cookie_operation"):
+            if st.session_state.get("pending_cookie_store_operation"):
                 st.caption("Syncing saved story lines in this browser...")
 
         if save_requested:
@@ -397,15 +577,21 @@ def main() -> None:
         "to communicate the intensifying biodiversity crisis."
     )
     st.info(
-        "Direct contributions and ideas are welcome: "
-        f"[contributing guide]({CONTRIBUTING_GUIDE_URL}) or "
+        f"MyStripes is open-source on [GitHub]({PROJECT_REPOSITORY_URL}). Direct contributions "
+        f"and ideas are welcome: [contributing guide]({CONTRIBUTING_GUIDE_URL}) or "
         f"[open a GitHub issue]({PROJECT_ISSUES_URL})."
     )
 
     _initialize_state(analysis_end)
+    storage_backend = _storyline_storage_backend()
+    if storage_backend == "cookie":
+        _sync_cookie_store()
+
+    _render_cookie_consent_banner(storage_backend)
 
     sidebar = st.sidebar
-    _render_storyline_panel(sidebar, analysis_end)
+    _render_cookie_settings(sidebar, storage_backend)
+    _render_storyline_panel(sidebar, analysis_end, storage_backend)
     active_cds_config = _render_cds_access_panel(sidebar)
     sidebar.header("Output")
     birth_date = sidebar.date_input(
@@ -1047,8 +1233,13 @@ def _initialize_state(analysis_end: date) -> None:
         st.session_state.saved_storyline_name = ""
     if "storyline_cookie_values" not in st.session_state:
         st.session_state.storyline_cookie_values = {}
-    if "pending_storyline_cookie_operation" not in st.session_state:
-        st.session_state.pending_storyline_cookie_operation = None
+    if "cookie_consent_payload" not in st.session_state:
+        st.session_state.cookie_consent_payload = None
+    if "pending_cookie_store_operation" not in st.session_state:
+        st.session_state.pending_cookie_store_operation = st.session_state.pop(
+            "pending_storyline_cookie_operation",
+            None,
+        )
 
 
 def _configured_geoapify_api_key() -> str:

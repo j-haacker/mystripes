@@ -28,6 +28,7 @@ from mystripes.gistemp import (
 from mystripes.models import CDSConfig
 from mystripes.notices import (
     CONTRIBUTING_GUIDE_URL,
+    PROJECT_ISSUES_URL,
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
@@ -325,7 +326,9 @@ def main() -> None:
         "to communicate the intensifying biodiversity crisis."
     )
     st.info(
-        f"Direct contributions and ideas are welcome: [contributing guide]({CONTRIBUTING_GUIDE_URL})."
+        "Direct contributions and ideas are welcome: "
+        f"[contributing guide]({CONTRIBUTING_GUIDE_URL}) or "
+        f"[open a GitHub issue]({PROJECT_ISSUES_URL})."
     )
 
     _initialize_state(analysis_end)

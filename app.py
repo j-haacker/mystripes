@@ -132,8 +132,8 @@ def main() -> None:
         }[value],
         help=(
             "Choose which date window defines the per-location day-of-year climatology. "
-            "The 1961-2010 option may trigger extra ERA5-Land requests for each unique "
-            "place. Story line period keeps the current behavior."
+            "The app always downloads the full available ERA5-Land series for each unique "
+            "place, then derives the selected reference period from that shared data."
         ),
     )
     rolling_sample_mode = "monthly"
@@ -370,6 +370,10 @@ def main() -> None:
                 "start": reference_start.isoformat(),
                 "end": reference_end.isoformat(),
             },
+            "fetch_window": {
+                "start": dataset_window.min_start.isoformat(),
+                "end": analysis_end.isoformat(),
+            },
             "aggregation_mode": aggregation_mode,
             "rolling_sample_mode": rolling_sample_mode,
             "rolling_strip_count": rolling_strip_count,
@@ -389,17 +393,10 @@ def main() -> None:
         period_aliases=debug_period_aliases,
     )
 
-    download_message = (
-        "Downloading ERA5-Land monthly data for your selected periods and the 1961-2010 "
-        "reference period..."
-        if reference_period_mode == "climate_normal_1961_2010"
-        else "Downloading ERA5-Land monthly data for your selected periods..."
-    )
-    with st.spinner(download_message):
+    with st.spinner("Downloading the full available ERA5-Land monthly series for your selected places..."):
         try:
             rolling_crop_start = min(period.start_date for period in periods_preview)
             first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
-            first_location_key = periods_preview[0].location_key
             unique_periods_by_location = {}
             for period in periods_preview:
                 unique_periods_by_location.setdefault(period.location_key, period)
@@ -408,12 +405,7 @@ def main() -> None:
                     config=active_cds_config,
                     latitude=period.latitude,
                     longitude=period.longitude,
-                    start_date=max(
-                        dataset_window.min_start,
-                        report_start - timedelta(days=364),
-                    )
-                    if aggregation_mode == "rolling_365_day" and location_key == first_location_key
-                    else report_start,
+                    start_date=dataset_window.min_start,
                     end_date=analysis_end,
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
@@ -423,37 +415,11 @@ def main() -> None:
                 for location_key, period in unique_periods_by_location.items()
             }
             period_frames = [location_frames[period.location_key] for period in periods_preview]
-            baseline_period_frames = None
-            if reference_period_mode == "climate_normal_1961_2010":
-                baseline_location_frames = {
-                    location_key: fetch_point_temperature_series(
-                        config=active_cds_config,
-                        latitude=period.latitude,
-                        longitude=period.longitude,
-                        start_date=reference_start,
-                        end_date=reference_end,
-                        spatial_mode=spatial_mode,
-                        radius_km=radius_km,
-                        boundary_geojson=period.boundary_geojson,
-                        boundary_bbox=period.bounding_box,
-                    )
-                    for location_key, period in unique_periods_by_location.items()
-                }
-                baseline_period_frames = [
-                    baseline_location_frames[period.location_key] for period in periods_preview
-                ]
         except (CDSRequestError, ValueError) as exc:
             _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
             st.error(str(exc))
             return
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
-    if baseline_period_frames is not None:
-        _debug_print(
-            debug_mode,
-            "fetched_baseline_period_frames",
-            baseline_period_frames,
-            period_aliases=debug_period_aliases,
-        )
 
     _debug_print(
         debug_mode,
@@ -475,7 +441,6 @@ def main() -> None:
             baseline_start=reference_start,
             baseline_end=reference_end,
             first_period_history_days=first_period_history_days,
-            baseline_frames_by_period=baseline_period_frames,
         )
         stripe_frame = aggregate_daily_series_to_stripes(
             daily_series=merged_daily,
@@ -500,7 +465,6 @@ def main() -> None:
             report_end=analysis_end,
             baseline_start=reference_start,
             baseline_end=reference_end,
-            baseline_frames_by_period=baseline_period_frames,
         )
     except ValueError as exc:
         _debug_print(debug_mode, "report_build_error", str(exc), period_aliases=debug_period_aliases)

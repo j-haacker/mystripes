@@ -167,9 +167,9 @@ def main() -> None:
             "interpreted as one stripe per year. Here, each stripe represents a sampled "
             "365-day moving average instead."
         )
-    width_px = int(sidebar.number_input("Width (px)", min_value=600, max_value=6000, value=1800, step=100))
-    height_px = int(sidebar.number_input("Height (px)", min_value=80, max_value=2400, value=260, step=20))
-    png_dpi = int(sidebar.number_input("PNG DPI", min_value=72, max_value=600, value=200, step=10))
+    width_px = int(sidebar.number_input("Width (px)", min_value=100, max_value=6000, value=1800, step=100))
+    height_px = int(sidebar.number_input("Height (px)", min_value=20, max_value=2400, value=260, step=20))
+    png_dpi = int(sidebar.number_input("PNG DPI", min_value=10, max_value=600, value=200, step=10))
     file_stem = sidebar.text_input("Download name", value="mystripes")
     debug_mode = sidebar.checkbox(
         "Debug mode",

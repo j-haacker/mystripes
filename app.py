@@ -116,6 +116,17 @@ def _render_storyline_feedback(sidebar) -> None:
         sidebar.info(message)
 
 
+def _queue_storyline_widget_update(key: str, value: object) -> None:
+    st.session_state[f"_pending_{key}"] = "" if value is None else str(value)
+
+
+def _apply_pending_storyline_widget_updates() -> None:
+    for key in ("storyline_name", "saved_storyline_name"):
+        pending_key = f"_pending_{key}"
+        if pending_key in st.session_state:
+            st.session_state[key] = st.session_state.pop(pending_key)
+
+
 def _current_storyline_period_entries() -> list[dict[str, object]]:
     synchronized_entries: list[dict[str, object]] = []
     entries = st.session_state.period_entries
@@ -191,6 +202,7 @@ def _cookie_storage_note() -> str:
 def _render_storyline_panel(sidebar, analysis_end: date) -> None:
     storage_backend = _storyline_storage_backend()
     _render_storyline_feedback(sidebar)
+    _apply_pending_storyline_widget_updates()
 
     try:
         saved_storylines = _load_saved_storylines(storage_backend)
@@ -247,8 +259,8 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
                     period_entries=_current_storyline_period_entries(),
                     include_boundary_geojson=storage_backend == "file",
                 )
-                st.session_state.storyline_name = str(payload["name"])
-                st.session_state.saved_storyline_name = str(payload["name"])
+                _queue_storyline_widget_update("storyline_name", payload["name"])
+                _queue_storyline_widget_update("saved_storyline_name", payload["name"])
                 if storage_backend == "file":
                     save_local_storyline(payload)
                     _set_storyline_feedback("success", f"Saved story line `{payload['name']}`.")
@@ -265,8 +277,8 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
         if load_requested and selected_storyline_name:
             payload = saved_storylines[selected_storyline_name]
             _apply_storyline_to_session(payload, analysis_end)
-            st.session_state.storyline_name = selected_storyline_name
-            st.session_state.saved_storyline_name = selected_storyline_name
+            _queue_storyline_widget_update("storyline_name", selected_storyline_name)
+            _queue_storyline_widget_update("saved_storyline_name", selected_storyline_name)
             _set_storyline_feedback("success", f"Loaded story line `{selected_storyline_name}`.")
             st.rerun()
 
@@ -276,15 +288,15 @@ def _render_storyline_panel(sidebar, analysis_end: date) -> None:
                     removed = remove_local_storyline(selected_storyline_name)
                     if removed:
                         if st.session_state.storyline_name == selected_storyline_name:
-                            st.session_state.storyline_name = ""
-                        st.session_state.saved_storyline_name = ""
+                            _queue_storyline_widget_update("storyline_name", "")
+                        _queue_storyline_widget_update("saved_storyline_name", "")
                         _set_storyline_feedback("success", f"Removed story line `{selected_storyline_name}`.")
                         st.rerun()
                     st.error(f"No saved story line named `{selected_storyline_name}` was found.")
                 else:
                     if st.session_state.storyline_name == selected_storyline_name:
-                        st.session_state.storyline_name = ""
-                    st.session_state.saved_storyline_name = ""
+                        _queue_storyline_widget_update("storyline_name", "")
+                    _queue_storyline_widget_update("saved_storyline_name", "")
                     components.html(
                         build_cookie_sync_html(storyline_cookie_name(selected_storyline_name), None),
                         height=0,

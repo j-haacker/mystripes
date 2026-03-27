@@ -15,6 +15,7 @@ from mystripes.cds import (
     _dataset_window_from_constraints,
     _request_area,
     fetch_point_temperature_series,
+    fetch_saved_temperature_series,
     parse_temperature_file,
 )
 from mystripes.models import CDSConfig
@@ -175,6 +176,80 @@ class MonthlyCDSTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         pd.testing.assert_frame_equal(first, aggregated)
         pd.testing.assert_frame_equal(second, aggregated)
+
+
+    def test_fetch_saved_temperature_series_only_fetches_missing_tail_months(self) -> None:
+        jan_feb = pd.DataFrame(
+            {
+                "timestamp": [
+                    pd.Timestamp("2020-01-01T00:00:00Z"),
+                    pd.Timestamp("2020-02-01T00:00:00Z"),
+                ],
+                "temperature_c": [1.5, 2.5],
+                "sample_days": [31, 29],
+            }
+        )
+        march = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-03-01T00:00:00Z")],
+                "temperature_c": [3.5],
+                "sample_days": [31],
+            }
+        )
+        fetch_calls: list[tuple[date, date]] = []
+
+        def fake_fetch(**kwargs):
+            fetch_calls.append((kwargs["start_date"], kwargs["end_date"]))
+            if (kwargs["start_date"], kwargs["end_date"]) == (date(2020, 1, 1), date(2020, 2, 29)):
+                return jan_feb
+            if (kwargs["start_date"], kwargs["end_date"]) == (date(2020, 3, 1), date(2020, 3, 31)):
+                return march
+            raise AssertionError(f"Unexpected fetch range: {kwargs['start_date']} to {kwargs['end_date']}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "timeline-cache"
+            with patch("mystripes.cds.fetch_point_temperature_series", side_effect=fake_fetch):
+                first = fetch_saved_temperature_series(
+                    config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                    latitude=48.2082,
+                    longitude=16.3738,
+                    start_date=date(2020, 1, 1),
+                    end_date=date(2020, 2, 29),
+                    cache_dir=cache_dir,
+                    request_cache_dir=Path(tmpdir) / "request-cache",
+                )
+                second = fetch_saved_temperature_series(
+                    config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                    latitude=48.2082,
+                    longitude=16.3738,
+                    start_date=date(2020, 1, 1),
+                    end_date=date(2020, 3, 31),
+                    cache_dir=cache_dir,
+                    request_cache_dir=Path(tmpdir) / "request-cache",
+                )
+                third = fetch_saved_temperature_series(
+                    config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                    latitude=48.2082,
+                    longitude=16.3738,
+                    start_date=date(2020, 1, 1),
+                    end_date=date(2020, 3, 31),
+                    cache_dir=cache_dir,
+                    request_cache_dir=Path(tmpdir) / "request-cache",
+                )
+
+        self.assertEqual(
+            fetch_calls,
+            [
+                (date(2020, 1, 1), date(2020, 2, 29)),
+                (date(2020, 3, 1), date(2020, 3, 31)),
+            ],
+        )
+        pd.testing.assert_frame_equal(first, jan_feb)
+        pd.testing.assert_frame_equal(
+            second,
+            pd.concat([jan_feb, march], ignore_index=True),
+        )
+        pd.testing.assert_frame_equal(third, second)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from mystripes.cds import (
     CDSRequestError,
     DEFAULT_CDSAPI_URL,
     clear_local_cds_config,
-    fetch_point_temperature_series,
+    fetch_saved_temperature_series,
     get_dataset_window,
     load_local_cds_config,
     resolve_cds_config,
@@ -37,6 +37,7 @@ from mystripes.notices import (
     copernicus_credit_notice,
 )
 from mystripes.plotting import export_figure_bytes, render_stripes_figure
+from mystripes.refresh import latest_data_end_that_can_change_stripes
 from mystripes.processing import (
     aggregate_daily_series_to_stripes,
     build_merged_daily_series,
@@ -604,6 +605,12 @@ def main() -> None:
 
     report_start = max(birth_date, dataset_window.min_start)
     try:
+        effective_report_end = latest_data_end_that_can_change_stripes(
+            report_start=report_start,
+            analysis_end=analysis_end,
+            aggregation_mode=aggregation_mode,
+            reference_period_mode=reference_period_mode,
+        )
         (
             reference_start,
             reference_end,
@@ -613,7 +620,7 @@ def main() -> None:
         ) = _resolve_climatology_reference_period(
             reference_mode=reference_period_mode,
             story_line_start=report_start,
-            story_line_end=analysis_end,
+            story_line_end=effective_report_end,
             dataset_start=dataset_window.min_start,
             dataset_end=dataset_window.max_end,
         )
@@ -628,6 +635,7 @@ def main() -> None:
         {
             "report_start": report_start.isoformat(),
             "analysis_end": analysis_end.isoformat(),
+            "effective_report_end": effective_report_end.isoformat(),
             "spatial_mode": spatial_mode,
             "radius_km": radius_km,
             "climatology": {
@@ -637,7 +645,7 @@ def main() -> None:
             },
             "fetch_window": {
                 "start": dataset_window.min_start.isoformat(),
-                "end": analysis_end.isoformat(),
+                "end": effective_report_end.isoformat(),
             },
             "aggregation_mode": aggregation_mode,
             "rolling_sample_mode": rolling_sample_mode,
@@ -666,7 +674,7 @@ def main() -> None:
         period_aliases=debug_period_aliases,
     )
 
-    with st.spinner("Downloading the full available ERA5-Land monthly series for your selected places..."):
+    with st.spinner("Loading saved ERA5-Land monthly series for your selected places and updating only when needed..."):
         try:
             rolling_crop_start = min(period.start_date for period in periods_preview)
             first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
@@ -674,12 +682,12 @@ def main() -> None:
             for period in periods_preview:
                 unique_periods_by_location.setdefault(period.location_key, period)
             location_frames = {
-                location_key: fetch_point_temperature_series(
+                location_key: fetch_saved_temperature_series(
                     config=active_cds_config,
                     latitude=period.latitude,
                     longitude=period.longitude,
                     start_date=dataset_window.min_start,
-                    end_date=analysis_end,
+                    end_date=effective_report_end,
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
                     boundary_geojson=period.boundary_geojson,
@@ -710,7 +718,7 @@ def main() -> None:
             periods=periods_preview,
             frames_by_period=period_frames,
             report_start=report_start - timedelta(days=first_period_history_days),
-            report_end=analysis_end,
+            report_end=effective_report_end,
             baseline_start=reference_start,
             baseline_end=reference_end,
             first_period_history_days=first_period_history_days,
@@ -718,7 +726,7 @@ def main() -> None:
         stripe_frame = aggregate_daily_series_to_stripes(
             daily_series=merged_daily,
             aggregation_mode=aggregation_mode,
-            rolling_window_end=analysis_end,
+            rolling_window_end=effective_report_end,
             rolling_crop_start=rolling_crop_start,
             rolling_sample_mode=rolling_sample_mode,
             rolling_strip_count=rolling_strip_count,
@@ -735,7 +743,7 @@ def main() -> None:
             periods=periods_preview,
             frames_by_period=period_frames,
             report_start=report_start,
-            report_end=analysis_end,
+            report_end=effective_report_end,
             baseline_start=reference_start,
             baseline_end=reference_end,
         )
@@ -770,6 +778,12 @@ def main() -> None:
         reference_start=reference_start,
         reference_end=reference_end,
     )
+    if effective_report_end < analysis_end:
+        st.caption(
+            "Temperature data is currently reused through "
+            f"{effective_report_end.isoformat()} because newer monthly values cannot yet change "
+            "full-calendar-year stripes with the selected fixed climatology reference period."
+        )
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Stripes shown", int(len(stripe_frame)))
@@ -780,7 +794,7 @@ def main() -> None:
         _aggregation_mode_caption(
             baseline_label,
             aggregation_mode,
-            analysis_end,
+            effective_report_end,
             rolling_sample_mode,
             rolling_strip_count,
         )

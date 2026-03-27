@@ -6,8 +6,12 @@ import json
 import math
 import os
 import tempfile
-import tomllib
 from collections.abc import Mapping
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
+    import tomli as tomllib
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -28,6 +32,8 @@ CONSTRAINTS_URL = (
 DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
 LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
 TEMPERATURE_CACHE_DIR = Path(".mystripes-cache")
+TEMPERATURE_REQUEST_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-requests"
+TEMPERATURE_TIMELINE_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-timelines"
 GRID_STEP_DEGREES = 0.1
 
 
@@ -123,7 +129,7 @@ def fetch_point_temperature_series(
     radius_km: float | None = None,
     boundary_geojson: Mapping[str, Any] | None = None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
-    cache_dir: Path | None = TEMPERATURE_CACHE_DIR,
+    cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
 ) -> pd.DataFrame:
     if start_date > end_date:
         raise ValueError("Start date must be on or before end date.")
@@ -207,6 +213,69 @@ def fetch_point_temperature_series(
     if cache_path is not None:
         _store_cached_temperature_series(cache_path, combined)
     return combined
+
+
+def fetch_saved_temperature_series(
+    config: CDSConfig,
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str = "single_cell",
+    radius_km: float | None = None,
+    boundary_geojson: Mapping[str, Any] | None = None,
+    boundary_bbox: tuple[float, float, float, float] | None = None,
+    cache_dir: Path | None = TEMPERATURE_TIMELINE_CACHE_DIR,
+    request_cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
+) -> pd.DataFrame:
+    if start_date > end_date:
+        raise ValueError("Start date must be on or before end date.")
+
+    cache_path = None
+    cached_frame = None
+    if cache_dir is not None:
+        cache_path = _temperature_timeline_cache_path(
+            cache_dir=cache_dir,
+            latitude=latitude,
+            longitude=longitude,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+        )
+        cached_frame = _load_cached_temperature_series(cache_path)
+
+    missing_ranges = _missing_temperature_ranges(cached_frame, start_date=start_date, end_date=end_date)
+    if not missing_ranges:
+        if cached_frame is None:
+            raise CDSRequestError("Saved temperature cache reported full coverage but no cached data was loaded.")
+        return _slice_temperature_series(cached_frame, start_date=start_date, end_date=end_date)
+
+    frames: list[pd.DataFrame] = []
+    if cached_frame is not None and not cached_frame.empty:
+        frames.append(cached_frame)
+
+    for missing_start, missing_end in missing_ranges:
+        frames.append(
+            fetch_point_temperature_series(
+                config=config,
+                latitude=latitude,
+                longitude=longitude,
+                start_date=missing_start,
+                end_date=missing_end,
+                spatial_mode=spatial_mode,
+                radius_km=radius_km,
+                boundary_geojson=boundary_geojson,
+                boundary_bbox=boundary_bbox,
+                cache_dir=request_cache_dir,
+            )
+        )
+
+    combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
+    combined = combined.reset_index(drop=True)
+    if cache_path is not None:
+        _store_cached_temperature_series(cache_path, combined)
+    return _slice_temperature_series(combined, start_date=start_date, end_date=end_date)
 
 
 def parse_temperature_file(
@@ -352,6 +421,81 @@ def _build_monthly_requests(
         )
 
     return requests_to_run
+
+
+def _temperature_timeline_cache_path(
+    cache_dir: Path,
+    latitude: float,
+    longitude: float,
+    spatial_mode: str,
+    radius_km: float | None,
+    boundary_geojson: Mapping[str, Any] | None,
+    boundary_bbox: tuple[float, float, float, float] | None,
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "cache_type": "timeline",
+        "dataset": DATASET_NAME,
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "spatial_mode": spatial_mode,
+        "radius_km": None if radius_km is None else round(radius_km, 6),
+        "boundary_geojson": boundary_geojson,
+        "boundary_bbox": list(boundary_bbox) if boundary_bbox is not None else None,
+    }
+    key = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / f"{key}.csv"
+
+
+def _missing_temperature_ranges(
+    cached_frame: pd.DataFrame | None,
+    start_date: date,
+    end_date: date,
+) -> list[tuple[date, date]]:
+    if cached_frame is None or cached_frame.empty:
+        return [(start_date, end_date)]
+
+    available_start = _month_start_date(cached_frame["timestamp"].min().date())
+    available_end = _month_end_date(cached_frame["timestamp"].max().date())
+    missing: list[tuple[date, date]] = []
+
+    if start_date < available_start:
+        missing_end = min(end_date, _previous_month_end(available_start))
+        if start_date <= missing_end:
+            missing.append((start_date, missing_end))
+
+    if end_date > available_end:
+        missing_start = max(start_date, _next_month(_month_start_date(available_end)))
+        if missing_start <= end_date:
+            missing.append((missing_start, end_date))
+
+    return missing
+
+
+def _slice_temperature_series(
+    frame: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
+    start_timestamp = pd.Timestamp(_month_start_date(start_date), tz="UTC")
+    end_timestamp = pd.Timestamp(_month_start_date(end_date), tz="UTC")
+    sliced = frame.loc[(frame["timestamp"] >= start_timestamp) & (frame["timestamp"] <= end_timestamp)].copy()
+    return sliced.sort_values("timestamp").reset_index(drop=True)
+
+
+def _month_start_date(value: date) -> date:
+    return value.replace(day=1)
+
+
+def _month_end_date(value: date) -> date:
+    return date(value.year, value.month, calendar.monthrange(value.year, value.month)[1])
+
+
+def _previous_month_end(value: date) -> date:
+    previous_month = value.replace(day=1) - pd.Timedelta(days=1)
+    return previous_month.date() if hasattr(previous_month, "date") else previous_month
 
 
 def _temperature_series_cache_path(

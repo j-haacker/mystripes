@@ -302,8 +302,14 @@ def main() -> None:
     st.title("MyStripes")
     st.write(
         "Build climate strips from places and periods using ERA5-Land monthly temperature "
-        "data. Use it as climate change signature of sufficiently long place-based "
-        "timelines (e.g. your life), then export a minimal graphic in PNG, SVG, or PDF."
+        "data and export them as minimal graphic in PNG, SVG, or PDF. Use it to communicate "
+        "how you or some entity experienced climate change."
+    )
+    st.markdown(
+        f"**[{SHOW_YOUR_STRIPES_CREDIT}]({SHOW_YOUR_STRIPES_URL})** "
+        "The original warming stripes are a powerful tool to communicate climate change. "
+        "Also, visit [#BiodiversityStripes](https://biodiversitystripes.info/) "
+        "to communicate the intensifying biodiversity crisis."
     )
 
     _initialize_state(analysis_end)

@@ -4,6 +4,8 @@
 
 MyStripes turns a sequence of places and periods into climate strips based on ERA5-Land monthly temperature data. It works well for personal life stations, multi-home stories, projects, teams, tours, campaigns, or any other place-based timeline.
 
+It is directly inspired by [Show Your Stripes](https://showyourstripes.info/), Ed Hawkins' widely shared warming-stripes project. If you have not seen that page yet, go check it out. It is excellent.
+
 The exported strips are intentionally lightweight, so they can be reused in email signatures, presentation decks, reports, posters, profile pages, and web embeds.
 
 ## Why this stack

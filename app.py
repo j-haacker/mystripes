@@ -19,6 +19,11 @@ from mystripes.cds import (
     save_local_cds_config,
 )
 from mystripes.geocoding import search_places
+from mystripes.gistemp import (
+    NASA_GISTEMP_GLOBAL_MEAN_URL,
+    average_global_warming_for_period,
+    load_global_mean_estimates,
+)
 from mystripes.models import CDSConfig
 from mystripes.notices import (
     ERA5_LAND_REFERENCE_CITATION,
@@ -53,6 +58,11 @@ def cached_dataset_window():
 @st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
 def cached_search_places(query: str, geoapify_api_key: str):
     return search_places(query, geoapify_api_key=geoapify_api_key or None)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
+def cached_gistemp_global_mean_estimates() -> pd.DataFrame:
+    return load_global_mean_estimates()
 
 
 def main() -> None:
@@ -117,7 +127,7 @@ def main() -> None:
         "Climatology reference period",
         options=("climate_normal_1961_2010", "story_line_period"),
         format_func=lambda value: {
-            "climate_normal_1961_2010": "1961-2010 climate normal",
+            "climate_normal_1961_2010": "1961-2010",
             "story_line_period": "Story line period",
         }[value],
         help=(
@@ -513,6 +523,10 @@ def main() -> None:
 
     st.subheader("Preview")
     st.image(png_bytes, width="stretch")
+    _render_reference_period_global_warming_warning(
+        reference_start=reference_start,
+        reference_end=reference_end,
+    )
 
     metric_columns = st.columns(4)
     metric_columns[0].metric("Stripes shown", int(len(stripe_frame)))
@@ -925,6 +939,45 @@ def _resolve_climatology_reference_period(
         )
 
     raise ValueError(f"Unsupported climatology reference period: {reference_mode}")
+
+
+def _render_reference_period_global_warming_warning(
+    reference_start: date,
+    reference_end: date,
+) -> None:
+    try:
+        annual_estimates = cached_gistemp_global_mean_estimates()
+        mean_anomaly_c, start_year, end_year = average_global_warming_for_period(
+            annual_estimates,
+            period_start=reference_start,
+            period_end=reference_end,
+        )
+    except Exception:
+        st.caption(
+            "NASA GISTEMP global-mean context is currently unavailable. Source: "
+            f"{NASA_GISTEMP_GLOBAL_MEAN_URL}"
+        )
+        return
+
+    requested_year_span = (reference_start.year, reference_end.year)
+    used_year_label = str(start_year) if start_year == end_year else f"{start_year}-{end_year}"
+    clipped_year_note = ""
+    if requested_year_span != (start_year, end_year):
+        requested_year_label = (
+            str(reference_start.year)
+            if reference_start.year == reference_end.year
+            else f"{reference_start.year}-{reference_end.year}"
+        )
+        clipped_year_note = (
+            f" Using overlapping NASA GISTEMP annual values for {used_year_label} "
+            f"instead of the full requested span {requested_year_label}."
+        )
+
+    st.warning(
+        f"The selected reference period ({used_year_label}) is {mean_anomaly_c:+.2f} C "
+        "above NASA GISTEMP annual global temperature 1951-1980 baseline."
+        f"{clipped_year_note} Source: {NASA_GISTEMP_GLOBAL_MEAN_URL}"
+    )
 
 
 def _aggregation_mode_caption(

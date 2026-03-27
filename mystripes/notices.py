@@ -9,6 +9,8 @@ SHOW_YOUR_STRIPES_CREDIT = (
     "Inspired by the #ShowYourStripes project created by Professor Ed Hawkins and "
     "the University of Reading."
 )
+PROJECT_REPOSITORY_URL = "https://github.com/j-haacker/mystripes"
+CONTRIBUTING_GUIDE_URL = f"{PROJECT_REPOSITORY_URL}/blob/main/CONTRIBUTING.md"
 ERA5_LAND_REFERENCE_CITATION = (
     "Mu\u00f1oz Sabater, J. et al. (2021): ERA5-Land: a state-of-the-art global "
     "reanalysis dataset for land applications. Earth System Science Data, 13, "

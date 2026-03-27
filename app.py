@@ -27,6 +27,7 @@ from mystripes.gistemp import (
 )
 from mystripes.models import CDSConfig
 from mystripes.notices import (
+    CONTRIBUTING_GUIDE_URL,
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
@@ -310,6 +311,10 @@ def main() -> None:
         "The original warming stripes are a powerful tool to communicate climate change. "
         "Also, visit [#BiodiversityStripes](https://biodiversitystripes.info/) "
         "to communicate the intensifying biodiversity crisis."
+    )
+    st.info(
+        "This is an open, welcoming project. Small fixes, docs improvements, tests, and "
+        f"ideas are all welcome: [contributing guide]({CONTRIBUTING_GUIDE_URL})."
     )
 
     _initialize_state(analysis_end)

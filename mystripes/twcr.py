@@ -1,0 +1,408 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import requests
+
+from mystripes.cds import (
+    CDSRequestError,
+    ProgressCallback,
+    TEMPERATURE_CACHE_DIR,
+    _aggregate_spatial_selection,
+    _emit_progress,
+    _load_cached_temperature_series,
+    _missing_temperature_ranges,
+    _slice_temperature_series,
+    _store_cached_temperature_series,
+    parse_temperature_file,
+)
+
+TWCR_SOURCE_ID = "20crv3"
+TWCR_DISPLAY_NAME = "NOAA 20CRv3 monthly 2 m air temperature"
+TWCR_DATASET_URL = "https://psl.noaa.gov/thredds/catalog/Datasets/20thC_ReanV3/Monthlies/2mSI-MO/catalog.html"
+TWCR_NCSS_URL = (
+    "https://psl.noaa.gov/thredds/ncss/grid/"
+    "Datasets/20thC_ReanV3/Monthlies/2mSI-MO/air.2m.mon.mean.nc"
+)
+TWCR_MIN_START = date(1836, 1, 1)
+TWCR_MAX_END = date(2015, 12, 31)
+TWCR_CACHE_DIR = TEMPERATURE_CACHE_DIR / TWCR_SOURCE_ID
+TWCR_REQUEST_CACHE_DIR = TWCR_CACHE_DIR / "window-cache"
+TWCR_TIMELINE_CACHE_DIR = TWCR_CACHE_DIR / "timeline-cache"
+TWCR_RAW_YEAR_CACHE_DIR = TWCR_CACHE_DIR / "raw-year-files"
+
+
+def fetch_twcr_temperature_series(
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str = "single_cell",
+    radius_km: float | None = None,
+    boundary_geojson: dict[str, Any] | None = None,
+    boundary_bbox: tuple[float, float, float, float] | None = None,
+    cache_dir: Path | None = TWCR_REQUEST_CACHE_DIR,
+    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
+) -> pd.DataFrame:
+    _validate_twcr_date_range(start_date, end_date)
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _twcr_window_cache_path(
+            cache_dir=cache_dir,
+            latitude=latitude,
+            longitude=longitude,
+            start_date=start_date,
+            end_date=end_date,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+        )
+        cached_frame = _load_cached_temperature_series(cache_path)
+        if cached_frame is not None:
+            _emit_progress(
+                progress_callback,
+                "request_cache_hit",
+                dataset=TWCR_SOURCE_ID,
+                dataset_label=TWCR_DISPLAY_NAME,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_count=0,
+            )
+            return cached_frame
+
+    years = _years_in_range(start_date, end_date)
+    _emit_progress(
+        progress_callback,
+        "request_plan",
+        dataset=TWCR_SOURCE_ID,
+        dataset_label=TWCR_DISPLAY_NAME,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        request_count=len(years),
+    )
+
+    frames: list[pd.DataFrame] = []
+    for request_index, year in enumerate(years, start=1):
+        raw_year_path = _twcr_raw_year_path(raw_year_cache_dir, year)
+        request_origin = "local_cache" if raw_year_path.exists() else "download"
+        _emit_progress(
+            progress_callback,
+            "request_started",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            request_index=request_index,
+            request_count=len(years),
+            request_year_start=str(year),
+            request_year_end=str(year),
+            month_count=12,
+            request_origin=request_origin,
+        )
+        if not raw_year_path.exists():
+            try:
+                _download_twcr_year_file(year, raw_year_path)
+            except Exception as exc:  # pragma: no cover - depends on external service.
+                _emit_progress(
+                    progress_callback,
+                    "request_failed",
+                    dataset=TWCR_SOURCE_ID,
+                    dataset_label=TWCR_DISPLAY_NAME,
+                    request_index=request_index,
+                    request_count=len(years),
+                    request_year_start=str(year),
+                    request_year_end=str(year),
+                    month_count=12,
+                    message=f"20CRv3 download for {year} failed: {exc}",
+                )
+                raise CDSRequestError(f"20CRv3 download for {year} failed: {exc}") from exc
+
+        grid_frame = parse_temperature_file(
+            raw_year_path,
+            target_latitude=latitude,
+            target_longitude=longitude,
+        )
+        frames.append(
+            _aggregate_spatial_selection(
+                grid_frame=grid_frame,
+                latitude=latitude,
+                longitude=longitude,
+                spatial_mode=spatial_mode,
+                radius_km=radius_km,
+                boundary_geojson=boundary_geojson,
+                boundary_bbox=boundary_bbox,
+            )
+        )
+        _emit_progress(
+            progress_callback,
+            "request_finished",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            request_index=request_index,
+            request_count=len(years),
+            request_year_start=str(year),
+            request_year_end=str(year),
+            month_count=12,
+            request_origin=request_origin,
+        )
+
+    if not frames:
+        raise CDSRequestError("20CRv3 returned no monthly data.")
+
+    combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
+    combined = combined.reset_index(drop=True)
+    combined = _slice_temperature_series(combined, start_date=start_date, end_date=end_date)
+    if cache_path is not None:
+        _store_cached_temperature_series(cache_path, combined)
+    _emit_progress(
+        progress_callback,
+        "point_fetch_completed",
+        dataset=TWCR_SOURCE_ID,
+        dataset_label=TWCR_DISPLAY_NAME,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        request_count=len(years),
+    )
+    return combined
+
+
+def fetch_saved_twcr_temperature_series(
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str = "single_cell",
+    radius_km: float | None = None,
+    boundary_geojson: dict[str, Any] | None = None,
+    boundary_bbox: tuple[float, float, float, float] | None = None,
+    cache_dir: Path | None = TWCR_TIMELINE_CACHE_DIR,
+    request_cache_dir: Path | None = TWCR_REQUEST_CACHE_DIR,
+    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
+) -> pd.DataFrame:
+    _validate_twcr_date_range(start_date, end_date)
+
+    cache_path = None
+    cached_frame = None
+    if cache_dir is not None:
+        cache_path = _twcr_timeline_cache_path(
+            cache_dir=cache_dir,
+            latitude=latitude,
+            longitude=longitude,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+        )
+        cached_frame = _load_cached_temperature_series(cache_path)
+
+    missing_ranges = _missing_temperature_ranges(cached_frame, start_date=start_date, end_date=end_date)
+    if not missing_ranges:
+        if cached_frame is None:
+            raise CDSRequestError("20CRv3 cache reported full coverage but no cached data was loaded.")
+        _emit_progress(
+            progress_callback,
+            "timeline_cache_hit",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            missing_range_count=0,
+        )
+        return _slice_temperature_series(cached_frame, start_date=start_date, end_date=end_date)
+
+    _emit_progress(
+        progress_callback,
+        "timeline_fetch_plan",
+        dataset=TWCR_SOURCE_ID,
+        dataset_label=TWCR_DISPLAY_NAME,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        missing_range_count=len(missing_ranges),
+        has_cached_data=bool(cached_frame is not None and not cached_frame.empty),
+    )
+
+    frames: list[pd.DataFrame] = []
+    if cached_frame is not None and not cached_frame.empty:
+        frames.append(cached_frame)
+
+    total_missing_ranges = len(missing_ranges)
+    for range_index, (missing_start, missing_end) in enumerate(missing_ranges, start=1):
+        _emit_progress(
+            progress_callback,
+            "missing_range_started",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            range_index=range_index,
+            range_count=total_missing_ranges,
+            range_start=missing_start.isoformat(),
+            range_end=missing_end.isoformat(),
+        )
+
+        def _forward_progress(event: dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            forwarded_event = dict(event)
+            forwarded_event.setdefault("range_index", range_index)
+            forwarded_event.setdefault("range_count", total_missing_ranges)
+            forwarded_event.setdefault("range_start", missing_start.isoformat())
+            forwarded_event.setdefault("range_end", missing_end.isoformat())
+            progress_callback(forwarded_event)
+
+        frames.append(
+            fetch_twcr_temperature_series(
+                latitude=latitude,
+                longitude=longitude,
+                start_date=missing_start,
+                end_date=missing_end,
+                spatial_mode=spatial_mode,
+                radius_km=radius_km,
+                boundary_geojson=boundary_geojson,
+                boundary_bbox=boundary_bbox,
+                cache_dir=request_cache_dir,
+                raw_year_cache_dir=raw_year_cache_dir,
+                progress_callback=_forward_progress,
+            )
+        )
+        _emit_progress(
+            progress_callback,
+            "missing_range_finished",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            range_index=range_index,
+            range_count=total_missing_ranges,
+            range_start=missing_start.isoformat(),
+            range_end=missing_end.isoformat(),
+        )
+
+    combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
+    combined = combined.reset_index(drop=True)
+    if cache_path is not None:
+        _store_cached_temperature_series(cache_path, combined)
+    _emit_progress(
+        progress_callback,
+        "timeline_fetch_completed",
+        dataset=TWCR_SOURCE_ID,
+        dataset_label=TWCR_DISPLAY_NAME,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        missing_range_count=total_missing_ranges,
+    )
+    return _slice_temperature_series(combined, start_date=start_date, end_date=end_date)
+
+
+def estimate_missing_twcr_years(
+    start_date: date,
+    end_date: date,
+    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
+) -> list[int]:
+    _validate_twcr_date_range(start_date, end_date)
+    if raw_year_cache_dir is None:
+        return _years_in_range(start_date, end_date)
+    return [
+        year
+        for year in _years_in_range(start_date, end_date)
+        if not _twcr_raw_year_path(raw_year_cache_dir, year).exists()
+    ]
+
+
+def _validate_twcr_date_range(start_date: date, end_date: date) -> None:
+    if start_date > end_date:
+        raise ValueError("Start date must be on or before end date.")
+    if start_date < TWCR_MIN_START or end_date > TWCR_MAX_END:
+        raise ValueError(
+            f"20CRv3 only covers {TWCR_MIN_START.isoformat()} to {TWCR_MAX_END.isoformat()}."
+        )
+
+
+def _years_in_range(start_date: date, end_date: date) -> list[int]:
+    return list(range(start_date.year, end_date.year + 1))
+
+
+def _download_twcr_year_file(year: int, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    query = {
+        "var": "air",
+        "time_start": f"{year:04d}-01-01T00:00:00Z",
+        "time_end": f"{year:04d}-12-31T23:59:59Z",
+        "timeStride": 1,
+        "accept": "netcdf4",
+    }
+    response = requests.get(TWCR_NCSS_URL, params=query, stream=True, timeout=(30, 300))
+    response.raise_for_status()
+
+    temporary_path = target_path.with_suffix(".tmp")
+    with temporary_path.open("wb") as handle:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                handle.write(chunk)
+    temporary_path.replace(target_path)
+
+
+def _twcr_raw_year_path(raw_year_cache_dir: Path | None, year: int) -> Path:
+    if raw_year_cache_dir is None:
+        raise ValueError("A raw-year cache directory is required for 20CRv3 downloads.")
+    return raw_year_cache_dir / f"air.2m.mon.mean.{year:04d}.nc"
+
+
+def _twcr_timeline_cache_path(
+    cache_dir: Path,
+    latitude: float,
+    longitude: float,
+    spatial_mode: str,
+    radius_km: float | None,
+    boundary_geojson: dict[str, Any] | None,
+    boundary_bbox: tuple[float, float, float, float] | None,
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "cache_type": "timeline",
+        "dataset": TWCR_SOURCE_ID,
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "spatial_mode": spatial_mode,
+        "radius_km": None if radius_km is None else round(radius_km, 6),
+        "boundary_geojson": boundary_geojson,
+        "boundary_bbox": list(boundary_bbox) if boundary_bbox is not None else None,
+    }
+    return _hashed_cache_path(cache_dir, payload)
+
+
+def _twcr_window_cache_path(
+    cache_dir: Path,
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+    boundary_geojson: dict[str, Any] | None,
+    boundary_bbox: tuple[float, float, float, float] | None,
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "cache_type": "window",
+        "dataset": TWCR_SOURCE_ID,
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "spatial_mode": spatial_mode,
+        "radius_km": None if radius_km is None else round(radius_km, 6),
+        "boundary_geojson": boundary_geojson,
+        "boundary_bbox": list(boundary_bbox) if boundary_bbox is not None else None,
+    }
+    return _hashed_cache_path(cache_dir, payload)
+
+
+def _hashed_cache_path(cache_dir: Path, payload: dict[str, Any]) -> Path:
+    key = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / f"{key}.csv"

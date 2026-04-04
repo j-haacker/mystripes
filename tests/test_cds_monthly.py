@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from mystripes.cds import (
+    ERA5_MONTHLY_DATASET,
     CDSRequestError,
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,
@@ -56,6 +57,19 @@ class MonthlyCDSTests(unittest.TestCase):
         )
 
         self.assertEqual(area, (48.2, 16.4, 48.2, 16.4))
+
+    def test_request_area_can_use_era5_bridge_grid_spacing(self) -> None:
+        area = _request_area(
+            latitude=48.2082,
+            longitude=16.3738,
+            spatial_mode="single_cell",
+            radius_km=None,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            grid_step_degrees=ERA5_MONTHLY_DATASET.grid_step_degrees,
+        )
+
+        self.assertEqual(area, (48.25, 16.25, 48.25, 16.25))
 
     def test_radius_aggregation_averages_cells_inside_radius(self) -> None:
         timestamp = pd.Timestamp("2020-01-01T00:00:00Z")

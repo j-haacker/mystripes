@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+from mystripes.api import build_period_indicator_specs
 from mystripes.cds import (
     CDSCredentialsMissingError,
     CDSRequestError,
@@ -308,12 +309,18 @@ def _current_storyline_period_entries() -> list[dict[str, object]]:
         latitude_key = f"latitude_{index}"
         longitude_key = f"longitude_{index}"
         end_date_key = f"end_date_{index}"
+        indicator_label_key = f"indicator_label_{index}"
+        show_indicator_key = f"show_indicator_{index}"
         if place_query_key in st.session_state:
             entry["place_query"] = str(st.session_state[place_query_key])
         if latitude_key in st.session_state:
             entry["latitude_text"] = str(st.session_state[latitude_key])
         if longitude_key in st.session_state:
             entry["longitude_text"] = str(st.session_state[longitude_key])
+        if indicator_label_key in st.session_state:
+            entry["indicator_label"] = str(st.session_state[indicator_label_key])
+        if show_indicator_key in st.session_state:
+            entry["show_indicator"] = bool(st.session_state[show_indicator_key])
         if index < len(entries) - 1 and end_date_key in st.session_state:
             entry["end_date"] = st.session_state[end_date_key]
         elif index == len(entries) - 1:
@@ -330,9 +337,11 @@ def _clear_period_widget_state() -> None:
             "end_date_",
             "geocode_choice_",
             "geocode_results_",
+            "indicator_label_",
             "latitude_",
             "longitude_",
             "place_query_",
+            "show_indicator_",
         )):
             del st.session_state[key]
 
@@ -352,6 +361,9 @@ def _apply_storyline_to_session(payload: dict[str, object], analysis_end: date) 
     for raw_entry in raw_entries:
         entry = _blank_entry()
         entry.update(dict(raw_entry))
+        indicator_label = str(entry.get("indicator_label", entry.get("custom_label", "")) or "")
+        entry["indicator_label"] = indicator_label
+        entry["show_indicator"] = bool(entry.get("show_indicator", False) or indicator_label)
         entries.append(entry)
 
     st.session_state.birth_date = clamped_birth_date
@@ -360,6 +372,8 @@ def _apply_storyline_to_session(payload: dict[str, object], analysis_end: date) 
         st.session_state[f"place_query_{index}"] = str(entry.get("place_query", "") or "")
         st.session_state[f"latitude_{index}"] = str(entry.get("latitude_text", "") or "")
         st.session_state[f"longitude_{index}"] = str(entry.get("longitude_text", "") or "")
+        st.session_state[f"indicator_label_{index}"] = str(entry.get("indicator_label", "") or "")
+        st.session_state[f"show_indicator_{index}"] = bool(entry.get("show_indicator", False))
         if index < len(entries) - 1 and entry.get("end_date") is not None:
             st.session_state[f"end_date_{index}"] = entry["end_date"]
 
@@ -962,6 +976,7 @@ def main() -> None:
 
     _render_credit_and_license_panel(today.year)
 
+    st.session_state.period_entries = _current_storyline_period_entries()
     periods_preview, preview_errors = build_periods_from_entries(
         entries=st.session_state.period_entries,
         birth_date=birth_date,
@@ -1059,6 +1074,21 @@ def main() -> None:
             else:
                 st.caption(f"Final period currently ends on `{analysis_end.isoformat()}`.")
 
+            entry["show_indicator"] = st.checkbox(
+                "Indicate this period in graphic",
+                value=bool(entry.get("show_indicator", False)),
+                key=f"show_indicator_{index}",
+                help="Adds an approximate range guide for this period on top of the stripes preview.",
+            )
+            if entry["show_indicator"]:
+                entry["indicator_label"] = st.text_input(
+                    "Graphic label",
+                    value=str(entry.get("indicator_label", "") or ""),
+                    key=f"indicator_label_{index}",
+                    placeholder=_default_indicator_label(entry, index),
+                    help="Optional shorter label for the graphic. Leave blank to use the place name.",
+                )
+
     controls = st.columns((1, 1, 2))
     if controls[0].button("Add period"):
         _add_period_entry(analysis_end)
@@ -1071,6 +1101,56 @@ def main() -> None:
         "phases, projects, tours, or any other place-based sequence. The app derives each "
         "next period start date from the previous period end date."
     )
+
+    indicated_period_indices = [
+        index
+        for index, entry in enumerate(st.session_state.period_entries)
+        if bool(entry.get("show_indicator", False))
+    ]
+    period_indicator_style = "scale_bar"
+    period_indicator_vertical_align = "bottom"
+    period_indicator_color = "#ffffff"
+    period_indicator_height_ratio = 0.2
+    if indicated_period_indices:
+        with st.expander("Period indicators", expanded=True):
+            st.caption(
+                "Show approximate guides for the selected periods on top of the stripes. "
+                "Scale bars keep a tiny gap between neighboring indicators so they do not touch."
+            )
+            indicator_columns = st.columns(4)
+            period_indicator_style = indicator_columns[0].selectbox(
+                "Design",
+                options=("scale_bar", "outward_arrows"),
+                format_func=lambda option: {
+                    "scale_bar": "Scale bar",
+                    "outward_arrows": "Outward arrows",
+                }[option],
+                key="period_indicator_style",
+            )
+            period_indicator_vertical_align = indicator_columns[1].selectbox(
+                "Placement",
+                options=("bottom", "center", "top"),
+                format_func=lambda option: option.capitalize(),
+                key="period_indicator_vertical_align",
+            )
+            period_indicator_color = indicator_columns[2].color_picker(
+                "Indicator color",
+                value="#ffffff",
+                key="period_indicator_color",
+            )
+            period_indicator_height_ratio = (
+                indicator_columns[3].slider(
+                    "Indicator height",
+                    min_value=5,
+                    max_value=100,
+                    value=20,
+                    step=5,
+                    format="%d%%",
+                    key="period_indicator_height_percent",
+                    help="Approximate share of the stripe graphic height that the indicator overlay may use.",
+                )
+                / 100.0
+            )
 
     for error in preview_errors:
         st.error(error)
@@ -1344,6 +1424,21 @@ def main() -> None:
     _debug_print(debug_mode, "all_periods_report", all_periods_report, period_aliases=debug_period_aliases)
     _debug_print(debug_mode, "merged_report", merged_report, period_aliases=debug_period_aliases)
 
+    period_indicator_specs = None
+    if indicated_period_indices:
+        period_indicator_specs = build_period_indicator_specs(
+            periods_preview,
+            stripe_frame,
+            included_period_indices=indicated_period_indices,
+        )
+        for spec in period_indicator_specs:
+            period_index = int(spec["period_index"])
+            fallback_label = periods_preview[period_index].label
+            spec["label"] = (
+                str(st.session_state.period_entries[period_index].get("indicator_label", "") or "").strip()
+                or fallback_label
+            )
+
     width_inches = width_px / png_dpi
     height_inches = height_px / png_dpi
     figure = render_stripes_figure(
@@ -1357,6 +1452,11 @@ def main() -> None:
         watermark_opacity=watermark_opacity,
         watermark_max_width_ratio=watermark_max_width_ratio,
         watermark_max_height_ratio=watermark_max_height_ratio,
+        period_indicators=period_indicator_specs,
+        period_indicator_style=period_indicator_style,
+        period_indicator_vertical_align=period_indicator_vertical_align,
+        period_indicator_color=period_indicator_color,
+        period_indicator_height_ratio=period_indicator_height_ratio,
     )
 
     png_bytes = export_figure_bytes(figure, "png", png_dpi)
@@ -1549,6 +1649,8 @@ def _blank_entry() -> dict[str, object]:
         "latitude_text": "",
         "longitude_text": "",
         "coordinate_source": "",
+        "indicator_label": "",
+        "show_indicator": False,
         "boundary_geojson": None,
         "bounding_box": None,
         "end_date": None,
@@ -1775,6 +1877,14 @@ def _period_range_label(
         if isinstance(current_end, date):
             current_start = current_end + timedelta(days=1)
     return birth_date.isoformat(), analysis_end.isoformat()
+
+
+def _default_indicator_label(entry: dict[str, object], index: int) -> str:
+    return (
+        str(entry.get("resolved_name", "") or "").strip()
+        or str(entry.get("place_query", "") or "").strip()
+        or f"Period {index + 1}"
+    )
 
 
 def _boundary_mode_caption(entry: dict[str, object]) -> str:

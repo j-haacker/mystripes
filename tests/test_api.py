@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 from matplotlib.colors import to_hex
 
-from mystripes.api import build_stripe_data, plot_stripes
+from mystripes.api import build_period_indicator_specs, build_stripe_data, plot_stripes
 
 
 class PublicAPITests(unittest.TestCase):
@@ -137,6 +137,203 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(stripe_data["baseline_end"], date(2000, 12, 31))
         self.assertEqual(stripe_data["stripe_frame"]["baseline_c"].round(2).tolist(), [10.0])
         self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0])
+
+    def test_build_period_indicator_specs_maps_periods_to_stripe_spans(self) -> None:
+        stripe_frame = pd.DataFrame(
+            {
+                "window_start": [date(2000, 1, 1), date(2001, 1, 1), date(2002, 1, 1), date(2003, 1, 1)],
+                "window_end": [date(2000, 12, 31), date(2001, 12, 31), date(2002, 12, 31), date(2003, 12, 31)],
+                "anomaly_c": [-1.0, -0.5, 0.5, 1.0],
+            }
+        )
+
+        specs = build_period_indicator_specs(
+            periods=[
+                {
+                    "label": "Home",
+                    "start_date": date(2000, 1, 1),
+                    "end_date": date(2001, 12, 31),
+                    "latitude": 48.2082,
+                    "longitude": 16.3738,
+                },
+                {
+                    "label": "Abroad",
+                    "start_date": date(2002, 1, 1),
+                    "end_date": date(2003, 12, 31),
+                    "latitude": 52.52,
+                    "longitude": 13.405,
+                },
+            ],
+            stripe_frame=stripe_frame,
+            included_period_indices=[0, 1],
+        )
+
+        self.assertEqual([spec["label"] for spec in specs], ["Home", "Abroad"])
+        self.assertAlmostEqual(float(specs[0]["start_fraction"]), 0.0, places=6)
+        self.assertAlmostEqual(float(specs[0]["end_fraction"]), 0.5, places=6)
+        self.assertAlmostEqual(float(specs[1]["start_fraction"]), 0.5, places=6)
+        self.assertAlmostEqual(float(specs[1]["end_fraction"]), 1.0, places=6)
+
+    def test_plot_stripes_supports_period_indicator_styles(self) -> None:
+        stripe_data = {
+            "stripe_frame": pd.DataFrame(
+                {
+                    "year": [2000, 2001, 2002, 2003],
+                    "anomaly_c": [-1.0, -0.4, 0.3, 0.9],
+                }
+            )
+        }
+        period_indicators = [
+            {"label": "Home", "start_fraction": 0.0, "end_fraction": 0.5},
+            {"label": "Abroad", "start_fraction": 0.5, "end_fraction": 1.0},
+        ]
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="top",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
+        self.assertGreaterEqual(len(axis.lines), 6)
+        self.assertGreater(float(axis.lines[1].get_xdata()[0]), float(axis.lines[0].get_xdata()[0]))
+        self.assertLess(float(axis.lines[2].get_xdata()[0]), float(axis.lines[0].get_xdata()[1]))
+        self.assertEqual(len(axis.patches), 0)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="bottom",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        scale_bar_bottom_label_y = float(axis.texts[0].get_position()[1])
+        scale_bar_bottom_line_y = float(axis.lines[0].get_ydata()[0])
+        self.assertGreater(scale_bar_bottom_label_y, scale_bar_bottom_line_y)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="outward_arrows",
+            period_indicator_vertical_align="bottom",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
+        self.assertAlmostEqual(float(axis.texts[0].get_position()[1]), scale_bar_bottom_label_y, places=6)
+        self.assertEqual(len(axis.lines), 0)
+        self.assertEqual(len(axis.patches), 2)
+        self.assertEqual(type(axis.patches[0]).__name__, "Polygon")
+        vertices = axis.patches[0].get_xy()
+        self.assertAlmostEqual(float(vertices[0][0]), 0.0, places=6)
+        self.assertGreater(float(vertices[5][0]), 0.498)
+        self.assertLess(float(vertices[5][0]), 0.5)
+        self.assertEqual(to_hex(axis.patches[0].get_edgecolor(), keep_alpha=False), "#000000")
+        self.assertAlmostEqual(float(axis.patches[0].get_linewidth()), 0.266667, places=5)
+        figure.clf()
+
+    def test_plot_stripes_supports_centered_period_indicators_and_height_scaling(self) -> None:
+        stripe_data = {
+            "stripe_frame": pd.DataFrame(
+                {
+                    "year": [2000, 2001, 2002, 2003],
+                    "anomaly_c": [-1.0, -0.4, 0.3, 0.9],
+                }
+            )
+        }
+        period_indicators = [
+            {"label": "Home", "start_fraction": 0.0, "end_fraction": 0.5},
+        ]
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=160,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="top",
+            period_indicator_height_ratio=0.2,
+        )
+        axis = figure.axes[0]
+        top_label_y = float(axis.texts[0].get_position()[1])
+        top_line_y = float(axis.lines[0].get_ydata()[0])
+        top_tick_y = [float(value) for value in axis.lines[1].get_ydata()]
+        self.assertLess(top_label_y, top_line_y)
+        self.assertGreater(top_label_y, min(top_tick_y))
+        self.assertEqual(max(top_tick_y), top_line_y)
+        self.assertLess(min(top_tick_y), top_line_y)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=160,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="center",
+            period_indicator_height_ratio=0.2,
+        )
+        axis = figure.axes[0]
+        center_label_y = float(axis.texts[0].get_position()[1])
+        center_line_y = float(axis.lines[0].get_ydata()[0])
+        center_tick_y = [float(value) for value in axis.lines[1].get_ydata()]
+        self.assertGreater(center_label_y, center_line_y)
+        self.assertLess(min(center_tick_y), center_line_y)
+        self.assertGreater(max(center_tick_y), center_line_y)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=160,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="bottom",
+            period_indicator_height_ratio=0.15,
+        )
+        axis = figure.axes[0]
+        small_label_y = float(axis.texts[0].get_position()[1])
+        small_line_y = float(axis.lines[0].get_ydata()[0])
+        small_tick_y = [float(value) for value in axis.lines[1].get_ydata()]
+        small_tick_height = abs(float(axis.lines[1].get_ydata()[1]) - float(axis.lines[1].get_ydata()[0]))
+        self.assertGreater(small_label_y, small_line_y)
+        self.assertLess(small_label_y, max(small_tick_y))
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=160,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="bottom",
+            period_indicator_height_ratio=0.45,
+        )
+        axis = figure.axes[0]
+        large_tick_height = abs(float(axis.lines[1].get_ydata()[1]) - float(axis.lines[1].get_ydata()[0]))
+        self.assertGreater(large_tick_height, small_tick_height)
+        figure.clf()
 
     def test_plot_stripes_supports_fitted_watermark(self) -> None:
         stripe_data = {

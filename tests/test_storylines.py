@@ -32,6 +32,8 @@ class StorylinePersistenceTests(unittest.TestCase):
                     "latitude_text": "48.2082",
                     "longitude_text": "16.3738",
                     "coordinate_source": "geoapify",
+                    "indicator_label": "Childhood",
+                    "show_indicator": True,
                     "boundary_geojson": {"type": "Point", "coordinates": [16.3738, 48.2082]},
                     "bounding_box": (16.2, 48.1, 16.5, 48.3),
                     "end_date": date(2010, 12, 31),
@@ -42,6 +44,8 @@ class StorylinePersistenceTests(unittest.TestCase):
                     "latitude_text": "52.5200",
                     "longitude_text": "13.4050",
                     "coordinate_source": "geoapify",
+                    "indicator_label": "",
+                    "show_indicator": False,
                     "bounding_box": (13.0, 52.3, 13.8, 52.7),
                     "end_date": None,
                 },
@@ -67,6 +71,8 @@ class StorylinePersistenceTests(unittest.TestCase):
         storyline = loaded["My life"]
         self.assertEqual(storyline["birth_date"], date(1990, 1, 1))
         self.assertEqual(storyline["period_entries"][0]["end_date"], date(2010, 12, 31))
+        self.assertEqual(storyline["period_entries"][0]["indicator_label"], "Childhood")
+        self.assertTrue(storyline["period_entries"][0]["show_indicator"])
         self.assertEqual(storyline["period_entries"][0]["bounding_box"], (16.2, 48.1, 16.5, 48.3))
         self.assertEqual(storyline["period_entries"][0]["boundary_geojson"], {"type": "Point", "coordinates": [16.3738, 48.2082]})
 
@@ -88,6 +94,8 @@ class StorylinePersistenceTests(unittest.TestCase):
         self.assertEqual(decoded["name"], "My life")
         self.assertEqual(decoded["birth_date"], date(1990, 1, 1))
         self.assertEqual(decoded["period_entries"][0]["end_date"], date(2010, 12, 31))
+        self.assertEqual(decoded["period_entries"][0]["indicator_label"], "Childhood")
+        self.assertTrue(decoded["period_entries"][0]["show_indicator"])
         self.assertIsNone(decoded["period_entries"][0]["boundary_geojson"])
 
     def test_load_cookie_storylines_ignores_invalid_cookie_values(self) -> None:
@@ -111,6 +119,32 @@ class StorylinePersistenceTests(unittest.TestCase):
 
         delete_html = build_cookie_sync_html("test_cookie", None)
         self.assertIn("Expires=Thu, 01 Jan 1970 00:00:00 GMT", delete_html)
+
+    def test_legacy_custom_label_becomes_indicator_label(self) -> None:
+        encoded = encode_storyline_cookie_value(
+            {
+                "version": 1,
+                "name": "Legacy",
+                "birth_date": "1990-01-01",
+                "period_entries": [
+                    {
+                        "place_query": "Vienna, Austria",
+                        "resolved_name": "Vienna, Austria",
+                        "latitude_text": "48.2082",
+                        "longitude_text": "16.3738",
+                        "coordinate_source": "geoapify",
+                        "custom_label": "Home",
+                        "bounding_box": (16.2, 48.1, 16.5, 48.3),
+                        "end_date": None,
+                    }
+                ],
+            }
+        )
+
+        decoded = decode_storyline_cookie_value(encoded)
+
+        self.assertEqual(decoded["period_entries"][0]["indicator_label"], "Home")
+        self.assertTrue(decoded["period_entries"][0]["show_indicator"])
 
 
 if __name__ == "__main__":

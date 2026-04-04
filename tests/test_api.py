@@ -252,6 +252,7 @@ class PublicAPITests(unittest.TestCase):
         top_line_y = float(axis.lines[0].get_ydata()[0])
         top_tick_y = [float(value) for value in axis.lines[1].get_ydata()]
         self.assertLess(top_label_y, top_line_y)
+        self.assertGreater(top_label_y, min(top_tick_y))
         self.assertEqual(max(top_tick_y), top_line_y)
         self.assertLess(min(top_tick_y), top_line_y)
         figure.clf()
@@ -288,8 +289,10 @@ class PublicAPITests(unittest.TestCase):
         axis = figure.axes[0]
         small_label_y = float(axis.texts[0].get_position()[1])
         small_line_y = float(axis.lines[0].get_ydata()[0])
+        small_tick_y = [float(value) for value in axis.lines[1].get_ydata()]
         small_tick_height = abs(float(axis.lines[1].get_ydata()[1]) - float(axis.lines[1].get_ydata()[0]))
         self.assertGreater(small_label_y, small_line_y)
+        self.assertLess(small_label_y, max(small_tick_y))
         figure.clf()
 
         figure = plot_stripes(

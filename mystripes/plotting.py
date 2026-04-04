@@ -238,7 +238,14 @@ def _add_period_indicators(
     for indicator in adjusted_indicators:
         start_fraction = indicator["start_fraction"]
         end_fraction = indicator["end_fraction"]
+        indicator_label_y = label_y
         if style == "scale_bar":
+            tick_length = abs(float(tick_bounds[1]) - float(tick_bounds[0]))
+            label_shift = tick_length / 2.0
+            if indicator_label_y >= line_y:
+                indicator_label_y -= label_shift
+            else:
+                indicator_label_y += label_shift
             axis.add_line(
                 Line2D(
                     [start_fraction, end_fraction],
@@ -292,7 +299,7 @@ def _add_period_indicators(
                 (
                     axis.text(
                         (start_fraction + end_fraction) / 2.0,
-                        label_y,
+                        indicator_label_y,
                         label,
                         transform=axis.transAxes,
                         ha="center",

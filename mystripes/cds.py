@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 try:
@@ -15,6 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
     import tomli as tomllib
 from datetime import date
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
@@ -63,8 +65,12 @@ DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
 LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
 TEMPERATURE_CACHE_DIR = Path(".mystripes-cache")
 TEMPERATURE_REQUEST_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-requests"
+TEMPERATURE_GRID_REQUEST_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-grid-requests"
 TEMPERATURE_TIMELINE_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-timelines"
 GRID_STEP_DEGREES = ERA5_LAND_MONTHLY_DATASET.grid_step_degrees
+
+_CACHE_PATH_LOCKS: dict[str, threading.Lock] = {}
+_CACHE_PATH_LOCKS_GUARD = threading.Lock()
 
 
 class CDSCredentialsMissingError(RuntimeError):
@@ -76,6 +82,18 @@ class CDSRequestError(RuntimeError):
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+@contextmanager
+def cache_path_lock(path: Path):
+    key = str(path.resolve())
+    with _CACHE_PATH_LOCKS_GUARD:
+        lock = _CACHE_PATH_LOCKS.setdefault(key, threading.Lock())
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _emit_progress(
@@ -176,6 +194,7 @@ def fetch_point_temperature_series(
     boundary_geojson: Mapping[str, Any] | None = None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
     cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
+    grid_cache_dir: Path | None = TEMPERATURE_GRID_REQUEST_CACHE_DIR,
     progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     if start_date > end_date:
@@ -210,13 +229,6 @@ def fetch_point_temperature_series(
             )
             return cached_frame
 
-    try:
-        import cdsapi
-    except ModuleNotFoundError as exc:
-        raise CDSRequestError(
-            "cdsapi is not installed. Install the dependencies from requirements.txt."
-        ) from exc
-
     request_area = _request_area(
         latitude=latitude,
         longitude=longitude,
@@ -226,102 +238,26 @@ def fetch_point_temperature_series(
         boundary_geojson=boundary_geojson,
         boundary_bbox=boundary_bbox,
     )
-    requests_to_run = _build_monthly_requests(
+    grid_frame = fetch_temperature_grid_frame(
+        config=config,
         start_date=start_date,
         end_date=end_date,
         area=request_area,
+        dataset=dataset,
+        target_latitude=latitude,
+        target_longitude=longitude,
+        cache_dir=grid_cache_dir,
+        progress_callback=progress_callback,
     )
-    total_requests = len(requests_to_run)
-    _emit_progress(
-        progress_callback,
-        "request_plan",
-        dataset=dataset.name,
-        dataset_label=dataset.display_name,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        request_count=total_requests,
+    combined = _aggregate_spatial_selection(
+        grid_frame=grid_frame,
+        latitude=latitude,
+        longitude=longitude,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=boundary_geojson,
+        boundary_bbox=boundary_bbox,
     )
-    client = cdsapi.Client(url=config.url, key=config.key, quiet=True, progress=False)
-    frames: list[pd.DataFrame] = []
-    last_error: Exception | None = None
-
-    for request_index, request in enumerate(requests_to_run, start=1):
-        request_years = [str(value) for value in request.get("year", [])]
-        request_months = [str(value) for value in request.get("month", [])]
-        request_year_start = request_years[0] if request_years else ""
-        request_year_end = request_years[-1] if request_years else ""
-        _emit_progress(
-            progress_callback,
-            "request_started",
-            dataset=dataset.name,
-            dataset_label=dataset.display_name,
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            request_index=request_index,
-            request_count=total_requests,
-            request_year_start=request_year_start,
-            request_year_end=request_year_end,
-            month_count=len(request_months),
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = Path(tmpdir) / "era5_land_monthly_request.nc"
-            try:
-                client.retrieve(dataset.name, request, str(target))
-            except Exception as exc:  # pragma: no cover - depends on external service.
-                last_error = exc
-                _emit_progress(
-                    progress_callback,
-                    "request_failed",
-                    dataset=dataset.name,
-                    dataset_label=dataset.display_name,
-                    start_date=start_date.isoformat(),
-                    end_date=end_date.isoformat(),
-                    request_index=request_index,
-                    request_count=total_requests,
-                    request_year_start=request_year_start,
-                    request_year_end=request_year_end,
-                    month_count=len(request_months),
-                    message=_explain_cds_error(exc),
-                )
-                break
-
-            grid_frame = parse_temperature_file(
-                target,
-                target_latitude=latitude,
-                target_longitude=longitude,
-            )
-            frames.append(
-                _aggregate_spatial_selection(
-                    grid_frame=grid_frame,
-                    latitude=latitude,
-                    longitude=longitude,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=boundary_geojson,
-                    boundary_bbox=boundary_bbox,
-                )
-            )
-        _emit_progress(
-            progress_callback,
-            "request_finished",
-            dataset=dataset.name,
-            dataset_label=dataset.display_name,
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            request_index=request_index,
-            request_count=total_requests,
-            request_year_start=request_year_start,
-            request_year_end=request_year_end,
-            month_count=len(request_months),
-        )
-
-    if not frames:
-        if last_error is not None:
-            raise CDSRequestError(_explain_cds_error(last_error))
-        raise CDSRequestError(f"{dataset.display_name} CDS request returned no monthly data.")
-
-    combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
-    combined = combined.reset_index(drop=True)
     if cache_path is not None:
         _store_cached_temperature_series(cache_path, combined)
     _emit_progress(
@@ -331,9 +267,173 @@ def fetch_point_temperature_series(
         dataset_label=dataset.display_name,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
-        request_count=total_requests,
+        request_count=1,
     )
     return combined
+
+
+def fetch_temperature_grid_frame(
+    config: CDSConfig,
+    start_date: date,
+    end_date: date,
+    area: tuple[float, float, float, float],
+    dataset: CDSMonthlyDataset = ERA5_LAND_MONTHLY_DATASET,
+    target_latitude: float = 0.0,
+    target_longitude: float = 0.0,
+    cache_dir: Path | None = TEMPERATURE_GRID_REQUEST_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
+) -> pd.DataFrame:
+    if start_date > end_date:
+        raise ValueError("Start date must be on or before end date.")
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _temperature_grid_request_cache_path(
+            cache_dir=cache_dir,
+            dataset=dataset,
+            start_date=start_date,
+            end_date=end_date,
+            area=area,
+        )
+        cached_frame = _load_cached_temperature_grid(cache_path)
+        if cached_frame is not None:
+            _emit_progress(
+                progress_callback,
+                "request_cache_hit",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_count=0,
+                cache_scope="shared_grid",
+                work_id=str(cache_path),
+            )
+            return cached_frame
+
+    with cache_path_lock(cache_path) if cache_path is not None else nullcontext():
+        if cache_path is not None:
+            cached_frame = _load_cached_temperature_grid(cache_path)
+            if cached_frame is not None:
+                _emit_progress(
+                    progress_callback,
+                    "request_cache_hit",
+                    dataset=dataset.name,
+                    dataset_label=dataset.display_name,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    request_count=0,
+                    cache_scope="shared_grid",
+                    work_id=str(cache_path),
+                )
+                return cached_frame
+
+        try:
+            import cdsapi
+        except ModuleNotFoundError as exc:
+            raise CDSRequestError(
+                "cdsapi is not installed. Install the dependencies from requirements.txt."
+            ) from exc
+
+        requests_to_run = _build_monthly_requests(
+            start_date=start_date,
+            end_date=end_date,
+            area=area,
+        )
+        total_requests = len(requests_to_run)
+        _emit_progress(
+            progress_callback,
+            "request_plan",
+            dataset=dataset.name,
+            dataset_label=dataset.display_name,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            request_count=total_requests,
+            cache_scope="shared_grid",
+            work_id=str(cache_path) if cache_path is not None else None,
+        )
+        client = cdsapi.Client(url=config.url, key=config.key, quiet=True, progress=False)
+        frames: list[pd.DataFrame] = []
+        last_error: Exception | None = None
+
+        for request_index, request in enumerate(requests_to_run, start=1):
+            request_years = [str(value) for value in request.get("year", [])]
+            request_months = [str(value) for value in request.get("month", [])]
+            request_year_start = request_years[0] if request_years else ""
+            request_year_end = request_years[-1] if request_years else ""
+            _emit_progress(
+                progress_callback,
+                "request_started",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_index=request_index,
+                request_count=total_requests,
+                request_year_start=request_year_start,
+                request_year_end=request_year_end,
+                month_count=len(request_months),
+                cache_scope="shared_grid",
+                work_id=str(cache_path) if cache_path is not None else None,
+            )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                target = Path(tmpdir) / "climate_monthly_request.nc"
+                try:
+                    client.retrieve(dataset.name, request, str(target))
+                except Exception as exc:  # pragma: no cover - depends on external service.
+                    last_error = exc
+                    _emit_progress(
+                        progress_callback,
+                        "request_failed",
+                        dataset=dataset.name,
+                        dataset_label=dataset.display_name,
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                        request_index=request_index,
+                        request_count=total_requests,
+                        request_year_start=request_year_start,
+                        request_year_end=request_year_end,
+                        month_count=len(request_months),
+                        message=_explain_cds_error(exc),
+                        cache_scope="shared_grid",
+                        work_id=str(cache_path) if cache_path is not None else None,
+                    )
+                    break
+
+                frames.append(
+                    parse_temperature_file(
+                        target,
+                        target_latitude=target_latitude,
+                        target_longitude=target_longitude,
+                    )
+                )
+            _emit_progress(
+                progress_callback,
+                "request_finished",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_index=request_index,
+                request_count=total_requests,
+                request_year_start=request_year_start,
+                request_year_end=request_year_end,
+                month_count=len(request_months),
+                cache_scope="shared_grid",
+                work_id=str(cache_path) if cache_path is not None else None,
+            )
+
+        if not frames:
+            if last_error is not None:
+                raise CDSRequestError(_explain_cds_error(last_error))
+            raise CDSRequestError(f"{dataset.display_name} CDS request returned no monthly data.")
+
+        combined = pd.concat(frames, ignore_index=True).sort_values(
+            ["timestamp", "grid_latitude", "grid_longitude"]
+        )
+        combined = combined.drop_duplicates(["timestamp", "grid_latitude", "grid_longitude"]).reset_index(drop=True)
+        if cache_path is not None:
+            _store_cached_temperature_grid(cache_path, combined)
+        return combined
 
 
 def fetch_saved_temperature_series(
@@ -721,6 +821,27 @@ def _temperature_series_cache_path(
     return cache_dir / f"{key}.csv"
 
 
+def _temperature_grid_request_cache_path(
+    cache_dir: Path,
+    dataset: CDSMonthlyDataset,
+    start_date: date,
+    end_date: date,
+    area: tuple[float, float, float, float],
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "cache_type": "grid_request",
+        "dataset": dataset.name,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "area": [round(value, 6) for value in area],
+    }
+    key = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / f"{key}.csv"
+
+
 def _load_cached_temperature_series(cache_path: Path) -> pd.DataFrame | None:
     if not cache_path.exists():
         return None
@@ -740,7 +861,36 @@ def _load_cached_temperature_series(cache_path: Path) -> pd.DataFrame | None:
     return frame.sort_values("timestamp").reset_index(drop=True)
 
 
+def _load_cached_temperature_grid(cache_path: Path) -> pd.DataFrame | None:
+    if not cache_path.exists():
+        return None
+
+    try:
+        frame = pd.read_csv(cache_path)
+    except Exception:
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    required_columns = {"timestamp", "temperature_c", "sample_days", "grid_latitude", "grid_longitude"}
+    if not required_columns.issubset(frame.columns):
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    return frame.sort_values(["timestamp", "grid_latitude", "grid_longitude"]).reset_index(drop=True)
+
+
 def _store_cached_temperature_series(cache_path: Path, frame: pd.DataFrame) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = frame.copy()
+    payload["timestamp"] = pd.to_datetime(payload["timestamp"], utc=True)
+
+    temporary_path = cache_path.with_suffix(".tmp")
+    payload.to_csv(temporary_path, index=False)
+    temporary_path.replace(cache_path)
+
+
+def _store_cached_temperature_grid(cache_path: Path, frame: pd.DataFrame) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     payload = frame.copy()
     payload["timestamp"] = pd.to_datetime(payload["timestamp"], utc=True)

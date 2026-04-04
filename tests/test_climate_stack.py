@@ -10,11 +10,14 @@ from mystripes.cds import ERA5_LAND_MONTHLY_DATASET, ERA5_MONTHLY_DATASET
 from mystripes.climate_stack import (
     CALIBRATION_BASELINE_END,
     CALIBRATION_BASELINE_START,
+    ClimateBatchPlan,
     ClimateDownloadEstimate,
     LocationClimateRequest,
+    build_climate_batch_plan,
     build_climate_source_slices,
     climate_stack_note,
     estimate_climate_downloads,
+    fetch_saved_climate_series_batch,
     fetch_saved_climate_series,
     get_climate_dataset_window,
     preflight_download_message,
@@ -86,18 +89,102 @@ class ClimateStackTests(unittest.TestCase):
             end_date=date(1945, 12, 31),
         )
 
-        with patch("mystripes.climate_stack._needs_cds_timeline_fetch", return_value=True), patch(
-            "mystripes.climate_stack._needs_cds_window_fetch",
-            return_value=True,
-        ), patch(
-            "mystripes.climate_stack.estimate_missing_twcr_years",
-            side_effect=[[1938, 1939], [1961, 1962]],
+        with patch(
+            "mystripes.climate_stack.build_climate_batch_plan",
+            return_value=type(
+                "Plan",
+                (),
+                {
+                    "location_requests": (request,),
+                    "shared_tasks": (
+                        type("Task", (), {"source_id": "era5_bridge", "year": None})(),
+                        type("Task", (), {"source_id": "era5_bridge", "year": None})(),
+                        type("Task", (), {"source_id": "20crv3", "year": 1938})(),
+                        type("Task", (), {"source_id": "20crv3", "year": 1939})(),
+                        type("Task", (), {"source_id": "20crv3", "year": 1961})(),
+                        type("Task", (), {"source_id": "20crv3", "year": 1962})(),
+                    ),
+                },
+            )(),
         ):
             estimate = estimate_climate_downloads([request], spatial_mode="single_cell")
 
         self.assertTrue(estimate.uses_historical_fallback)
         self.assertEqual(estimate.uncached_era5_bridge_fetches, 2)
         self.assertEqual(estimate.uncached_twcr_years, (1938, 1939, 1961, 1962))
+
+    def test_build_climate_batch_plan_deduplicates_shared_era5_tasks(self) -> None:
+        requests = [
+            LocationClimateRequest(
+                location_key="a",
+                display_name="A",
+                latitude=48.2082,
+                longitude=16.3738,
+                boundary_geojson=None,
+                boundary_bbox=None,
+                start_date=date(1944, 1, 1),
+                end_date=date(1944, 12, 31),
+            ),
+            LocationClimateRequest(
+                location_key="b",
+                display_name="B",
+                latitude=48.2401,
+                longitude=16.3601,
+                boundary_geojson=None,
+                boundary_bbox=None,
+                start_date=date(1944, 1, 1),
+                end_date=date(1944, 12, 31),
+            ),
+        ]
+
+        with patch("mystripes.climate_stack._load_cached_temperature_series", return_value=None), patch(
+            "pathlib.Path.exists",
+            return_value=False,
+        ), patch(
+            "mystripes.climate_stack._needs_cds_window_fetch",
+            return_value=False,
+        ):
+            batch_plan = build_climate_batch_plan(requests, spatial_mode="single_cell")
+
+        era5_bridge_tasks = [task for task in batch_plan.shared_tasks if task.source_id == "era5_bridge"]
+        visible_tasks = [
+            task
+            for task in era5_bridge_tasks
+            if task.start_date == date(1944, 1, 1) and task.end_date == date(1944, 12, 31)
+        ]
+        self.assertEqual(len(visible_tasks), 1)
+
+    def test_fetch_saved_climate_series_batch_reports_shared_and_location_progress(self) -> None:
+        request = LocationClimateRequest(
+            location_key="a",
+            display_name="A",
+            latitude=48.2082,
+            longitude=16.3738,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            start_date=date(1955, 1, 1),
+            end_date=date(1955, 12, 31),
+        )
+        events: list[dict[str, object]] = []
+        frame = _monthly_frame("1955-01-01", 1, [1.0])
+
+        with patch(
+            "mystripes.climate_stack.build_climate_batch_plan",
+            return_value=ClimateBatchPlan(location_requests=(request,), shared_tasks=()),
+        ), patch(
+            "mystripes.climate_stack.fetch_saved_climate_series",
+            return_value=frame,
+        ):
+            result = fetch_saved_climate_series_batch(
+                config=CDSConfig(url="https://example.invalid/api", key="secret"),
+                location_requests=[request],
+                progress_callback=events.append,
+            )
+
+        self.assertIn("a", result)
+        self.assertEqual(events[0]["stage"], "batch_plan")
+        self.assertEqual(events[1]["stage"], "location_started")
+        self.assertEqual(events[2]["stage"], "location_finished")
 
     def test_fetch_saved_climate_series_keeps_modern_era5_land_data_unchanged(self) -> None:
         land_frame = _monthly_frame("1955-01-01", 2, [1.0, 2.0])

@@ -14,6 +14,7 @@ from mystripes.cds import (
     ProgressCallback,
     TEMPERATURE_CACHE_DIR,
     _aggregate_spatial_selection,
+    cache_path_lock,
     _emit_progress,
     _load_cached_temperature_series,
     _missing_temperature_ranges,
@@ -104,24 +105,15 @@ def fetch_twcr_temperature_series(
             request_year_end=str(year),
             month_count=12,
             request_origin=request_origin,
+            work_id=str(raw_year_path),
         )
-        if not raw_year_path.exists():
-            try:
-                _download_twcr_year_file(year, raw_year_path)
-            except Exception as exc:  # pragma: no cover - depends on external service.
-                _emit_progress(
-                    progress_callback,
-                    "request_failed",
-                    dataset=TWCR_SOURCE_ID,
-                    dataset_label=TWCR_DISPLAY_NAME,
-                    request_index=request_index,
-                    request_count=len(years),
-                    request_year_start=str(year),
-                    request_year_end=str(year),
-                    month_count=12,
-                    message=f"20CRv3 download for {year} failed: {exc}",
-                )
-                raise CDSRequestError(f"20CRv3 download for {year} failed: {exc}") from exc
+        _ensure_twcr_year_cached(
+            year,
+            raw_year_cache_dir=raw_year_cache_dir,
+            progress_callback=progress_callback,
+            request_index=request_index,
+            request_count=len(years),
+        )
 
         grid_frame = parse_temperature_file(
             raw_year_path,
@@ -150,6 +142,7 @@ def fetch_twcr_temperature_series(
             request_year_end=str(year),
             month_count=12,
             request_origin=request_origin,
+            work_id=str(raw_year_path),
         )
 
     if not frames:
@@ -343,6 +336,68 @@ def _download_twcr_year_file(year: int, target_path: Path) -> None:
             if chunk:
                 handle.write(chunk)
     temporary_path.replace(target_path)
+
+
+def ensure_twcr_year_cached(
+    year: int,
+    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
+) -> Path:
+    return _ensure_twcr_year_cached(
+        year,
+        raw_year_cache_dir=raw_year_cache_dir,
+        progress_callback=progress_callback,
+        request_index=1,
+        request_count=1,
+    )
+
+
+def _ensure_twcr_year_cached(
+    year: int,
+    *,
+    raw_year_cache_dir: Path | None,
+    progress_callback: ProgressCallback | None,
+    request_index: int,
+    request_count: int,
+) -> Path:
+    raw_year_path = _twcr_raw_year_path(raw_year_cache_dir, year)
+    if raw_year_path.exists():
+        return raw_year_path
+
+    with cache_path_lock(raw_year_path):
+        if raw_year_path.exists():
+            _emit_progress(
+                progress_callback,
+                "request_cache_hit",
+                dataset=TWCR_SOURCE_ID,
+                dataset_label=TWCR_DISPLAY_NAME,
+                start_date=f"{year:04d}-01-01",
+                end_date=f"{year:04d}-12-31",
+                request_count=0,
+                cache_scope="shared_year",
+                work_id=str(raw_year_path),
+            )
+            return raw_year_path
+
+        try:
+            _download_twcr_year_file(year, raw_year_path)
+        except Exception as exc:  # pragma: no cover - depends on external service.
+            _emit_progress(
+                progress_callback,
+                "request_failed",
+                dataset=TWCR_SOURCE_ID,
+                dataset_label=TWCR_DISPLAY_NAME,
+                request_index=request_index,
+                request_count=request_count,
+                request_year_start=str(year),
+                request_year_end=str(year),
+                month_count=12,
+                message=f"20CRv3 download for {year} failed: {exc}",
+                cache_scope="shared_year",
+                work_id=str(raw_year_path),
+            )
+            raise CDSRequestError(f"20CRv3 download for {year} failed: {exc}") from exc
+    return raw_year_path
 
 
 def _twcr_raw_year_path(raw_year_cache_dir: Path | None, year: int) -> Path:

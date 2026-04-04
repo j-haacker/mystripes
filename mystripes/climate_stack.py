@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from queue import Empty, Queue
 from typing import Any
 
 import pandas as pd
@@ -10,16 +12,20 @@ import pandas as pd
 from mystripes.cds import (
     ERA5_LAND_MONTHLY_DATASET,
     ERA5_MONTHLY_DATASET,
+    TEMPERATURE_GRID_REQUEST_CACHE_DIR,
     TEMPERATURE_REQUEST_CACHE_DIR,
     TEMPERATURE_TIMELINE_CACHE_DIR,
     CDSConfig,
     DatasetWindow,
     ProgressCallback,
     _emit_progress,
+    _request_area,
     _load_cached_temperature_series,
     _missing_temperature_ranges,
     _temperature_series_cache_path,
+    _temperature_grid_request_cache_path,
     _temperature_timeline_cache_path,
+    fetch_temperature_grid_frame,
     fetch_point_temperature_series,
     fetch_saved_temperature_series,
     get_dataset_window,
@@ -30,9 +36,13 @@ from mystripes.twcr import (
     TWCR_MAX_END,
     TWCR_MIN_START,
     TWCR_RAW_YEAR_CACHE_DIR,
+    TWCR_REQUEST_CACHE_DIR,
     TWCR_SOURCE_ID,
     TWCR_TIMELINE_CACHE_DIR,
+    _twcr_timeline_cache_path,
+    _twcr_window_cache_path,
     estimate_missing_twcr_years,
+    ensure_twcr_year_cached,
     fetch_saved_twcr_temperature_series,
     fetch_twcr_temperature_series,
 )
@@ -69,6 +79,25 @@ class ClimateDownloadEstimate:
     uses_historical_fallback: bool
     uncached_era5_bridge_fetches: int
     uncached_twcr_years: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SharedClimateTask:
+    work_id: str
+    source_id: str
+    label: str
+    task_kind: str
+    start_date: date | None = None
+    end_date: date | None = None
+    year: int | None = None
+    dataset: Any | None = None
+    area: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True)
+class ClimateBatchPlan:
+    location_requests: tuple[LocationClimateRequest, ...]
+    shared_tasks: tuple[SharedClimateTask, ...]
 
 
 def get_climate_dataset_window() -> DatasetWindow:
@@ -149,64 +178,520 @@ def estimate_climate_downloads(
     spatial_mode: str,
     radius_km: float | None = None,
 ) -> ClimateDownloadEstimate:
-    uses_historical_fallback = False
-    uncached_era5_bridge_fetches = 0
-    uncached_twcr_years: set[int] = set()
-
-    for request in location_requests:
-        source_slices = build_climate_source_slices(request.start_date, request.end_date)
-        if any(source.source_id != "era5_land" for source in source_slices):
-            uses_historical_fallback = True
-
-        if any(source.source_id == "era5_bridge" for source in source_slices):
-            visible_slice = next(source for source in source_slices if source.source_id == "era5_bridge")
-            if _needs_cds_timeline_fetch(
-                dataset=ERA5_MONTHLY_DATASET,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                start_date=visible_slice.start_date,
-                end_date=visible_slice.end_date,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=request.boundary_geojson,
-                boundary_bbox=request.boundary_bbox,
-            ):
-                uncached_era5_bridge_fetches += 1
-            if _needs_cds_window_fetch(
-                dataset=ERA5_MONTHLY_DATASET,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                start_date=CALIBRATION_BASELINE_START,
-                end_date=CALIBRATION_BASELINE_END,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=request.boundary_geojson,
-                boundary_bbox=request.boundary_bbox,
-            ):
-                uncached_era5_bridge_fetches += 1
-
-        if any(source.source_id == TWCR_SOURCE_ID for source in source_slices):
-            visible_slice = next(source for source in source_slices if source.source_id == TWCR_SOURCE_ID)
-            uncached_twcr_years.update(
-                estimate_missing_twcr_years(
-                    visible_slice.start_date,
-                    visible_slice.end_date,
-                    raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
-                )
-            )
-            uncached_twcr_years.update(
-                estimate_missing_twcr_years(
-                    CALIBRATION_BASELINE_START,
-                    CALIBRATION_BASELINE_END,
-                    raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
-                )
-            )
+    batch_plan = build_climate_batch_plan(
+        location_requests,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+    )
+    uses_historical_fallback = any(
+        any(source.source_id != "era5_land" for source in build_climate_source_slices(request.start_date, request.end_date))
+        for request in location_requests
+    )
+    uncached_era5_bridge_fetches = sum(
+        1
+        for task in batch_plan.shared_tasks
+        if task.source_id == "era5_bridge"
+    )
+    uncached_twcr_years = {
+        int(task.year)
+        for task in batch_plan.shared_tasks
+        if task.source_id == TWCR_SOURCE_ID and task.year is not None
+    }
 
     return ClimateDownloadEstimate(
         uses_historical_fallback=uses_historical_fallback,
         uncached_era5_bridge_fetches=uncached_era5_bridge_fetches,
         uncached_twcr_years=tuple(sorted(uncached_twcr_years)),
     )
+
+
+def build_climate_batch_plan(
+    location_requests: Sequence[LocationClimateRequest],
+    *,
+    spatial_mode: str,
+    radius_km: float | None = None,
+) -> ClimateBatchPlan:
+    shared_tasks: dict[str, SharedClimateTask] = {}
+
+    for request in location_requests:
+        request_area_era5_land = _request_area_for_location_request(
+            request,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            dataset=ERA5_LAND_MONTHLY_DATASET,
+        )
+        request_area_era5 = _request_area_for_location_request(
+            request,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            dataset=ERA5_MONTHLY_DATASET,
+        )
+        source_slices = build_climate_source_slices(request.start_date, request.end_date)
+        for source_slice in source_slices:
+            if source_slice.source_id == "era5_land":
+                _add_missing_cds_timeline_tasks(
+                    shared_tasks,
+                    request=request,
+                    dataset=ERA5_LAND_MONTHLY_DATASET,
+                    area=request_area_era5_land,
+                    start_date=source_slice.start_date,
+                    end_date=source_slice.end_date,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                )
+                continue
+
+            if source_slice.source_id == "era5_bridge":
+                _add_missing_cds_timeline_tasks(
+                    shared_tasks,
+                    request=request,
+                    dataset=ERA5_MONTHLY_DATASET,
+                    area=request_area_era5,
+                    start_date=source_slice.start_date,
+                    end_date=source_slice.end_date,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                )
+                _add_missing_cds_window_task(
+                    shared_tasks,
+                    request=request,
+                    dataset=ERA5_MONTHLY_DATASET,
+                    area=request_area_era5,
+                    start_date=CALIBRATION_BASELINE_START,
+                    end_date=CALIBRATION_BASELINE_END,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    source_id="era5_bridge",
+                    label=ERA5_MONTHLY_DATASET.display_name,
+                )
+                _add_missing_cds_window_task(
+                    shared_tasks,
+                    request=request,
+                    dataset=ERA5_LAND_MONTHLY_DATASET,
+                    area=request_area_era5_land,
+                    start_date=CALIBRATION_BASELINE_START,
+                    end_date=CALIBRATION_BASELINE_END,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    source_id="era5_land",
+                    label=ERA5_LAND_MONTHLY_DATASET.display_name,
+                )
+                continue
+
+            if source_slice.source_id == TWCR_SOURCE_ID:
+                _add_missing_twcr_timeline_tasks(
+                    shared_tasks,
+                    request=request,
+                    start_date=source_slice.start_date,
+                    end_date=source_slice.end_date,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                )
+                _add_missing_twcr_window_tasks(
+                    shared_tasks,
+                    request=request,
+                    start_date=CALIBRATION_BASELINE_START,
+                    end_date=CALIBRATION_BASELINE_END,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                )
+                _add_missing_cds_window_task(
+                    shared_tasks,
+                    request=request,
+                    dataset=ERA5_LAND_MONTHLY_DATASET,
+                    area=request_area_era5_land,
+                    start_date=CALIBRATION_BASELINE_START,
+                    end_date=CALIBRATION_BASELINE_END,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    source_id="era5_land",
+                    label=ERA5_LAND_MONTHLY_DATASET.display_name,
+                )
+
+    return ClimateBatchPlan(
+        location_requests=tuple(location_requests),
+        shared_tasks=tuple(shared_tasks.values()),
+    )
+
+
+def fetch_saved_climate_series_batch(
+    config: CDSConfig,
+    location_requests: Sequence[LocationClimateRequest],
+    *,
+    spatial_mode: str = "single_cell",
+    radius_km: float | None = None,
+    progress_callback: ProgressCallback | None = None,
+    max_workers: int | None = None,
+) -> dict[str, pd.DataFrame]:
+    batch_plan = build_climate_batch_plan(
+        location_requests,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+    )
+    _emit_progress(
+        progress_callback,
+        "batch_plan",
+        total_locations=len(batch_plan.location_requests),
+        total_shared_tasks=len(batch_plan.shared_tasks),
+    )
+
+    event_queue: Queue[dict[str, Any]] = Queue()
+    results: dict[str, pd.DataFrame] = {}
+    effective_workers = max_workers or max(
+        1,
+        min(8, len(batch_plan.location_requests) + len(batch_plan.shared_tasks)),
+    )
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        if batch_plan.shared_tasks:
+            shared_futures = {
+                executor.submit(_run_shared_task, config, task, event_queue.put): task
+                for task in batch_plan.shared_tasks
+            }
+            _drain_futures(
+                shared_futures,
+                event_queue=event_queue,
+                progress_callback=progress_callback,
+            )
+
+        location_futures = {
+            executor.submit(
+                _run_location_task,
+                config,
+                request,
+                spatial_mode,
+                radius_km,
+                event_queue.put,
+            ): request
+            for request in batch_plan.location_requests
+        }
+        results.update(
+            _drain_futures(
+                location_futures,
+                event_queue=event_queue,
+                progress_callback=progress_callback,
+                returns_location_frames=True,
+            )
+        )
+
+    _drain_progress_queue(event_queue, progress_callback)
+    return results
+
+
+def _drain_futures(
+    future_map: dict[Future[Any], Any],
+    *,
+    event_queue: Queue[dict[str, Any]],
+    progress_callback: ProgressCallback | None,
+    returns_location_frames: bool = False,
+) -> dict[str, pd.DataFrame]:
+    pending = set(future_map)
+    results: dict[str, pd.DataFrame] = {}
+
+    while pending:
+        done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+        _drain_progress_queue(event_queue, progress_callback)
+        for future in done:
+            payload = future_map[future]
+            result = future.result()
+            if returns_location_frames:
+                results[payload.location_key] = result
+        if not done:
+            _drain_progress_queue(event_queue, progress_callback)
+
+    _drain_progress_queue(event_queue, progress_callback)
+    return results
+
+
+def _drain_progress_queue(
+    event_queue: Queue[dict[str, Any]],
+    progress_callback: ProgressCallback | None,
+) -> None:
+    while True:
+        try:
+            event = event_queue.get_nowait()
+        except Empty:
+            return
+        if progress_callback is not None:
+            progress_callback(event)
+
+
+def _run_shared_task(
+    config: CDSConfig,
+    task: SharedClimateTask,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    _emit_progress(
+        progress_callback,
+        "shared_task_started",
+        work_id=task.work_id,
+        source_id=task.source_id,
+        source_label=task.label,
+        task_kind=task.task_kind,
+    )
+    if task.task_kind == "cds_grid":
+        fetch_temperature_grid_frame(
+            config=config,
+            start_date=task.start_date,
+            end_date=task.end_date,
+            area=task.area,
+            dataset=task.dataset,
+            target_latitude=0.0,
+            target_longitude=0.0,
+            progress_callback=progress_callback,
+        )
+    elif task.task_kind == "twcr_year":
+        ensure_twcr_year_cached(
+            int(task.year),
+            raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
+            progress_callback=progress_callback,
+        )
+    else:  # pragma: no cover - defensive guard.
+        raise ValueError(f"Unsupported shared climate task kind: {task.task_kind}")
+    _emit_progress(
+        progress_callback,
+        "shared_task_finished",
+        work_id=task.work_id,
+        source_id=task.source_id,
+        source_label=task.label,
+        task_kind=task.task_kind,
+    )
+
+
+def _run_location_task(
+    config: CDSConfig,
+    request: LocationClimateRequest,
+    spatial_mode: str,
+    radius_km: float | None,
+    progress_callback: ProgressCallback | None,
+) -> pd.DataFrame:
+    _emit_progress(
+        progress_callback,
+        "location_started",
+        location_key=request.location_key,
+        location_label=request.display_name,
+    )
+    frame = fetch_saved_climate_series(
+        config=config,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+        progress_callback=_forward_location_progress(progress_callback, request),
+    )
+    _emit_progress(
+        progress_callback,
+        "location_finished",
+        location_key=request.location_key,
+        location_label=request.display_name,
+    )
+    return frame
+
+
+def _forward_location_progress(
+    progress_callback: ProgressCallback | None,
+    request: LocationClimateRequest,
+):
+    def _forward(event: dict[str, Any]) -> None:
+        if progress_callback is None:
+            return
+        forwarded = dict(event)
+        forwarded.setdefault("location_key", request.location_key)
+        forwarded.setdefault("location_label", request.display_name)
+        progress_callback(forwarded)
+
+    return _forward
+
+
+def _request_area_for_location_request(
+    request: LocationClimateRequest,
+    *,
+    spatial_mode: str,
+    radius_km: float | None,
+    dataset,
+) -> tuple[float, float, float, float]:
+    return _request_area(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+        grid_step_degrees=dataset.grid_step_degrees,
+    )
+
+
+def _add_missing_cds_timeline_tasks(
+    shared_tasks: dict[str, SharedClimateTask],
+    *,
+    request: LocationClimateRequest,
+    dataset,
+    area: tuple[float, float, float, float],
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+) -> None:
+    timeline_cache_path = _temperature_timeline_cache_path(
+        cache_dir=TEMPERATURE_TIMELINE_CACHE_DIR,
+        dataset=dataset,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+    )
+    cached_frame = _load_cached_temperature_series(timeline_cache_path)
+    missing_ranges = _missing_temperature_ranges(cached_frame, start_date=start_date, end_date=end_date)
+    source_id = "era5_land" if dataset.name == ERA5_LAND_MONTHLY_DATASET.name else "era5_bridge"
+    for missing_start, missing_end in missing_ranges:
+        work_path = _temperature_grid_request_cache_path(
+            cache_dir=TEMPERATURE_GRID_REQUEST_CACHE_DIR,
+            dataset=dataset,
+            start_date=missing_start,
+            end_date=missing_end,
+            area=area,
+        )
+        if work_path.exists():
+            continue
+        shared_tasks.setdefault(
+            str(work_path),
+            SharedClimateTask(
+                work_id=str(work_path),
+                source_id=source_id,
+                label=dataset.display_name,
+                task_kind="cds_grid",
+                start_date=missing_start,
+                end_date=missing_end,
+                dataset=dataset,
+                area=area,
+            ),
+        )
+
+
+def _add_missing_cds_window_task(
+    shared_tasks: dict[str, SharedClimateTask],
+    *,
+    request: LocationClimateRequest,
+    dataset,
+    area: tuple[float, float, float, float],
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+    source_id: str,
+    label: str,
+) -> None:
+    if not _needs_cds_window_fetch(
+        dataset=dataset,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        start_date=start_date,
+        end_date=end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+    ):
+        return
+    work_path = _temperature_grid_request_cache_path(
+        cache_dir=TEMPERATURE_GRID_REQUEST_CACHE_DIR,
+        dataset=dataset,
+        start_date=start_date,
+        end_date=end_date,
+        area=area,
+    )
+    if work_path.exists():
+        return
+    shared_tasks.setdefault(
+        str(work_path),
+        SharedClimateTask(
+            work_id=str(work_path),
+            source_id=source_id,
+            label=label,
+            task_kind="cds_grid",
+            start_date=start_date,
+            end_date=end_date,
+            dataset=dataset,
+            area=area,
+        ),
+    )
+
+
+def _add_missing_twcr_timeline_tasks(
+    shared_tasks: dict[str, SharedClimateTask],
+    *,
+    request: LocationClimateRequest,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+) -> None:
+    timeline_cache_path = _twcr_timeline_cache_path(
+        cache_dir=TWCR_TIMELINE_CACHE_DIR,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+    )
+    cached_frame = _load_cached_temperature_series(timeline_cache_path)
+    missing_ranges = _missing_temperature_ranges(cached_frame, start_date=start_date, end_date=end_date)
+    for missing_start, missing_end in missing_ranges:
+        _register_twcr_year_tasks(shared_tasks, start_date=missing_start, end_date=missing_end)
+
+
+def _add_missing_twcr_window_tasks(
+    shared_tasks: dict[str, SharedClimateTask],
+    *,
+    request: LocationClimateRequest,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+) -> None:
+    if not _needs_twcr_window_fetch(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        start_date=start_date,
+        end_date=end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
+    ):
+        return
+    _register_twcr_year_tasks(shared_tasks, start_date=start_date, end_date=end_date)
+
+
+def _register_twcr_year_tasks(
+    shared_tasks: dict[str, SharedClimateTask],
+    *,
+    start_date: date,
+    end_date: date,
+) -> None:
+    for year in estimate_missing_twcr_years(
+        start_date,
+        end_date,
+        raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
+    ):
+        work_id = str(TWCR_RAW_YEAR_CACHE_DIR / f"air.2m.mon.mean.{year:04d}.nc")
+        shared_tasks.setdefault(
+            work_id,
+            SharedClimateTask(
+                work_id=work_id,
+                source_id=TWCR_SOURCE_ID,
+                label=TWCR_DISPLAY_NAME,
+                task_kind="twcr_year",
+                year=year,
+            ),
+        )
 
 
 def fetch_saved_climate_series(
@@ -565,6 +1050,31 @@ def _needs_cds_window_fetch(
     cache_path = _temperature_series_cache_path(
         cache_dir=TEMPERATURE_REQUEST_CACHE_DIR,
         dataset=dataset,
+        latitude=latitude,
+        longitude=longitude,
+        start_date=start_date,
+        end_date=end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=boundary_geojson,
+        boundary_bbox=boundary_bbox,
+    )
+    return not cache_path.exists()
+
+
+def _needs_twcr_window_fetch(
+    *,
+    latitude: float,
+    longitude: float,
+    start_date: date,
+    end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
+    boundary_geojson: Mapping[str, Any] | None,
+    boundary_bbox: tuple[float, float, float, float] | None,
+) -> bool:
+    cache_path = _twcr_window_cache_path(
+        cache_dir=TWCR_REQUEST_CACHE_DIR,
         latitude=latitude,
         longitude=longitude,
         start_date=start_date,

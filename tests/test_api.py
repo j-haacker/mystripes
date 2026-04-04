@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 from matplotlib.colors import to_hex
 
-from mystripes.api import build_stripe_data, plot_stripes
+from mystripes.api import build_period_indicator_specs, build_stripe_data, plot_stripes
 
 
 class PublicAPITests(unittest.TestCase):
@@ -137,6 +137,90 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(stripe_data["baseline_end"], date(2000, 12, 31))
         self.assertEqual(stripe_data["stripe_frame"]["baseline_c"].round(2).tolist(), [10.0])
         self.assertEqual(stripe_data["stripe_frame"]["anomaly_c"].round(2).tolist(), [1.0])
+
+    def test_build_period_indicator_specs_maps_periods_to_stripe_spans(self) -> None:
+        stripe_frame = pd.DataFrame(
+            {
+                "window_start": [date(2000, 1, 1), date(2001, 1, 1), date(2002, 1, 1), date(2003, 1, 1)],
+                "window_end": [date(2000, 12, 31), date(2001, 12, 31), date(2002, 12, 31), date(2003, 12, 31)],
+                "anomaly_c": [-1.0, -0.5, 0.5, 1.0],
+            }
+        )
+
+        specs = build_period_indicator_specs(
+            periods=[
+                {
+                    "label": "Home",
+                    "start_date": date(2000, 1, 1),
+                    "end_date": date(2001, 12, 31),
+                    "latitude": 48.2082,
+                    "longitude": 16.3738,
+                },
+                {
+                    "label": "Abroad",
+                    "start_date": date(2002, 1, 1),
+                    "end_date": date(2003, 12, 31),
+                    "latitude": 52.52,
+                    "longitude": 13.405,
+                },
+            ],
+            stripe_frame=stripe_frame,
+            included_period_indices=[0, 1],
+        )
+
+        self.assertEqual([spec["label"] for spec in specs], ["Home", "Abroad"])
+        self.assertAlmostEqual(float(specs[0]["start_fraction"]), 0.0, places=6)
+        self.assertAlmostEqual(float(specs[0]["end_fraction"]), 0.5, places=6)
+        self.assertAlmostEqual(float(specs[1]["start_fraction"]), 0.5, places=6)
+        self.assertAlmostEqual(float(specs[1]["end_fraction"]), 1.0, places=6)
+
+    def test_plot_stripes_supports_period_indicator_styles(self) -> None:
+        stripe_data = {
+            "stripe_frame": pd.DataFrame(
+                {
+                    "year": [2000, 2001, 2002, 2003],
+                    "anomaly_c": [-1.0, -0.4, 0.3, 0.9],
+                }
+            )
+        }
+        period_indicators = [
+            {"label": "Home", "start_fraction": 0.0, "end_fraction": 0.5},
+            {"label": "Abroad", "start_fraction": 0.5, "end_fraction": 1.0},
+        ]
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="top",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
+        self.assertGreaterEqual(len(axis.lines), 6)
+        self.assertEqual(len(axis.patches), 0)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
+            period_indicator_style="outward_arrows",
+            period_indicator_vertical_align="bottom",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
+        self.assertEqual(len(axis.lines), 0)
+        self.assertEqual(len(axis.patches), 2)
+        figure.clf()
 
     def test_plot_stripes_supports_fitted_watermark(self) -> None:
         stripe_data = {

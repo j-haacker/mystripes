@@ -20,6 +20,8 @@ AggregationMode = Literal["full_calendar_years", "rolling_365_day"]
 RollingSampleMode = Literal["monthly", "fixed_count"]
 WatermarkHorizontalAlign = Literal["left", "center", "right"]
 WatermarkVerticalAlign = Literal["bottom", "center", "top"]
+PeriodIndicatorStyle = Literal["scale_bar", "outward_arrows"]
+PeriodIndicatorVerticalAlign = Literal["bottom", "top"]
 
 
 def build_stripe_data(
@@ -118,6 +120,84 @@ def build_stripe_data(
     return result
 
 
+def build_period_indicator_specs(
+    periods: Sequence[LifePeriod] | pd.DataFrame | Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    stripe_frame: pd.DataFrame,
+    *,
+    included_period_indices: Sequence[int] | None = None,
+) -> list[dict[str, Any]]:
+    normalized_periods = _coerce_periods(periods)
+    required_columns = {"window_start", "window_end"}
+    if not required_columns.issubset(stripe_frame.columns):
+        raise ValueError("stripe_frame must include window_start and window_end columns.")
+
+    included = set(range(len(normalized_periods))) if included_period_indices is None else {
+        int(index) for index in included_period_indices if 0 <= int(index) < len(normalized_periods)
+    }
+    if not included:
+        return []
+
+    windows: list[tuple[date, date]] = []
+    for row in stripe_frame[["window_start", "window_end"]].itertuples(index=False):
+        windows.append((_coerce_required_date(row.window_start, "window_start"), _coerce_required_date(row.window_end, "window_end")))
+    if not windows:
+        return []
+
+    dominant_period_by_window: list[int | None] = []
+    overlapping_periods_by_window: list[set[int]] = []
+    for window_start, window_end in windows:
+        best_period_index: int | None = None
+        best_overlap_days = 0
+        overlapping_indices: set[int] = set()
+        for period_index, period in enumerate(normalized_periods):
+            overlap_start = max(window_start, period.start_date)
+            overlap_end = min(window_end, period.end_date)
+            if overlap_start > overlap_end:
+                continue
+            overlap_days = (overlap_end - overlap_start).days + 1
+            overlapping_indices.add(period_index)
+            if overlap_days > best_overlap_days:
+                best_overlap_days = overlap_days
+                best_period_index = period_index
+        dominant_period_by_window.append(best_period_index)
+        overlapping_periods_by_window.append(overlapping_indices)
+
+    indicator_specs: list[dict[str, Any]] = []
+    window_count = len(windows)
+    for period_index, period in enumerate(normalized_periods):
+        if period_index not in included:
+            continue
+        assigned_indices = [
+            window_index
+            for window_index, dominant_period_index in enumerate(dominant_period_by_window)
+            if dominant_period_index == period_index
+        ]
+        if assigned_indices:
+            start_index = assigned_indices[0]
+            end_index = assigned_indices[-1]
+        else:
+            overlapping_indices = [
+                window_index
+                for window_index, overlapping_period_indices in enumerate(overlapping_periods_by_window)
+                if period_index in overlapping_period_indices
+            ]
+            if not overlapping_indices:
+                continue
+            start_index = overlapping_indices[0]
+            end_index = overlapping_indices[-1]
+
+        indicator_specs.append(
+            {
+                "period_index": period_index,
+                "label": period.label,
+                "start_fraction": start_index / window_count,
+                "end_fraction": (end_index + 1) / window_count,
+            }
+        )
+
+    return indicator_specs
+
+
 def plot_stripes(
     stripe_data: Mapping[str, Any] | pd.DataFrame,
     *,
@@ -133,12 +213,18 @@ def plot_stripes(
     watermark_opacity: float = 0.35,
     watermark_max_width_ratio: float = 0.8,
     watermark_max_height_ratio: float = 0.8,
+    period_indicators: Sequence[Mapping[str, Any]] | None = None,
+    period_indicator_style: PeriodIndicatorStyle = "scale_bar",
+    period_indicator_vertical_align: PeriodIndicatorVerticalAlign = "bottom",
+    period_indicator_color: str = "#ffffff",
 ) -> Figure:
     """Plot stripes from the bundle returned by `build_stripe_data`.
 
     If `output_path` is provided, the figure is also saved there. Provide
     `watermark_text` and the other watermark arguments to overlay a fitted
-    text watermark over the stripes graphic.
+    text watermark over the stripes graphic. Provide `period_indicators`
+    together with the period-indicator style arguments to overlay approximate
+    period-range labels on top of the stripes.
     """
 
     stripe_frame = _extract_stripe_frame(stripe_data)
@@ -153,6 +239,10 @@ def plot_stripes(
         watermark_opacity=watermark_opacity,
         watermark_max_width_ratio=watermark_max_width_ratio,
         watermark_max_height_ratio=watermark_max_height_ratio,
+        period_indicators=period_indicators,
+        period_indicator_style=period_indicator_style,
+        period_indicator_vertical_align=period_indicator_vertical_align,
+        period_indicator_color=period_indicator_color,
     )
 
     if output_path is not None:

@@ -492,12 +492,15 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
         if str(event.get("dataset") or "").startswith("reanalysis-era5"):
             noun = "batch" if request_count == 1 else "batches"
         else:
-            noun = "year file" if request_count == 1 else "year files"
+            noun = "yearly request" if request_count == 1 else "yearly requests"
         if purpose == "calibration":
             return f"Preparing {request_count} {dataset_label} calibration {noun}."
         return f"Need {request_count} {dataset_label} request {noun} for this timeline segment."
     if stage == "request_started":
         batch_label = _request_batch_label(event)
+        request_scope = str(event.get("request_scope") or "")
+        if request_scope == "year_subset":
+            batch_label = batch_label or "subset"
         if request_origin == "local_cache":
             return (
                 f"Reading saved {dataset_label} {batch_label}."
@@ -517,6 +520,9 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
         )
     if stage == "request_finished":
         batch_label = _request_batch_label(event)
+        request_scope = str(event.get("request_scope") or "")
+        if request_scope == "year_subset":
+            batch_label = batch_label or "subset"
         if request_origin == "local_cache":
             return (
                 f"Finished reading saved {dataset_label} {batch_label}."
@@ -1402,6 +1408,7 @@ def main() -> None:
                 else {
                     "uses_historical_fallback": historical_download_estimate.uses_historical_fallback,
                     "uncached_era5_bridge_fetches": historical_download_estimate.uncached_era5_bridge_fetches,
+                    "uncached_twcr_fetches": historical_download_estimate.uncached_twcr_fetches,
                     "uncached_twcr_years": list(historical_download_estimate.uncached_twcr_years),
                 }
             ),

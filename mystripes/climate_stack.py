@@ -33,6 +33,7 @@ from mystripes.cds import (
 from mystripes.models import LifePeriod
 from mystripes.twcr import (
     TWCR_DISPLAY_NAME,
+    TWCR_GRID_REQUEST_CACHE_DIR,
     TWCR_MAX_END,
     TWCR_MIN_START,
     TWCR_RAW_YEAR_CACHE_DIR,
@@ -41,10 +42,11 @@ from mystripes.twcr import (
     TWCR_TIMELINE_CACHE_DIR,
     _twcr_timeline_cache_path,
     _twcr_window_cache_path,
-    estimate_missing_twcr_years,
+    ensure_twcr_grid_year_cached,
     ensure_twcr_year_cached,
     fetch_saved_twcr_temperature_series,
     fetch_twcr_temperature_series,
+    plan_twcr_downloads,
 )
 
 CALIBRATION_BASELINE_START = date(1961, 1, 1)
@@ -78,6 +80,7 @@ class LocationClimateRequest:
 class ClimateDownloadEstimate:
     uses_historical_fallback: bool
     uncached_era5_bridge_fetches: int
+    uncached_twcr_fetches: int
     uncached_twcr_years: tuple[int, ...]
 
 
@@ -98,6 +101,7 @@ class SharedClimateTask:
 class ClimateBatchPlan:
     location_requests: tuple[LocationClimateRequest, ...]
     shared_tasks: tuple[SharedClimateTask, ...]
+    location_dependencies: dict[str, tuple[str, ...]]
 
 
 def get_climate_dataset_window() -> DatasetWindow:
@@ -192,6 +196,11 @@ def estimate_climate_downloads(
         for task in batch_plan.shared_tasks
         if task.source_id == "era5_bridge"
     )
+    uncached_twcr_fetches = sum(
+        1
+        for task in batch_plan.shared_tasks
+        if task.source_id == TWCR_SOURCE_ID
+    )
     uncached_twcr_years = {
         int(task.year)
         for task in batch_plan.shared_tasks
@@ -201,6 +210,7 @@ def estimate_climate_downloads(
     return ClimateDownloadEstimate(
         uses_historical_fallback=uses_historical_fallback,
         uncached_era5_bridge_fetches=uncached_era5_bridge_fetches,
+        uncached_twcr_fetches=uncached_twcr_fetches,
         uncached_twcr_years=tuple(sorted(uncached_twcr_years)),
     )
 
@@ -212,8 +222,10 @@ def build_climate_batch_plan(
     radius_km: float | None = None,
 ) -> ClimateBatchPlan:
     shared_tasks: dict[str, SharedClimateTask] = {}
+    location_dependencies: dict[str, set[str]] = {}
 
     for request in location_requests:
+        request_dependencies = location_dependencies.setdefault(request.location_key, set())
         request_area_era5_land = _request_area_for_location_request(
             request,
             spatial_mode=spatial_mode,
@@ -231,6 +243,7 @@ def build_climate_batch_plan(
             if source_slice.source_id == "era5_land":
                 _add_missing_cds_timeline_tasks(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     dataset=ERA5_LAND_MONTHLY_DATASET,
                     area=request_area_era5_land,
@@ -244,6 +257,7 @@ def build_climate_batch_plan(
             if source_slice.source_id == "era5_bridge":
                 _add_missing_cds_timeline_tasks(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     dataset=ERA5_MONTHLY_DATASET,
                     area=request_area_era5,
@@ -254,6 +268,7 @@ def build_climate_batch_plan(
                 )
                 _add_missing_cds_window_task(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     dataset=ERA5_MONTHLY_DATASET,
                     area=request_area_era5,
@@ -266,6 +281,7 @@ def build_climate_batch_plan(
                 )
                 _add_missing_cds_window_task(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     dataset=ERA5_LAND_MONTHLY_DATASET,
                     area=request_area_era5_land,
@@ -281,6 +297,7 @@ def build_climate_batch_plan(
             if source_slice.source_id == TWCR_SOURCE_ID:
                 _add_missing_twcr_timeline_tasks(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     start_date=source_slice.start_date,
                     end_date=source_slice.end_date,
@@ -289,6 +306,7 @@ def build_climate_batch_plan(
                 )
                 _add_missing_twcr_window_tasks(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     start_date=CALIBRATION_BASELINE_START,
                     end_date=CALIBRATION_BASELINE_END,
@@ -297,6 +315,7 @@ def build_climate_batch_plan(
                 )
                 _add_missing_cds_window_task(
                     shared_tasks,
+                    location_dependencies=request_dependencies,
                     request=request,
                     dataset=ERA5_LAND_MONTHLY_DATASET,
                     area=request_area_era5_land,
@@ -311,6 +330,10 @@ def build_climate_batch_plan(
     return ClimateBatchPlan(
         location_requests=tuple(location_requests),
         shared_tasks=tuple(shared_tasks.values()),
+        location_dependencies={
+            location_key: tuple(sorted(dependencies))
+            for location_key, dependencies in location_dependencies.items()
+        },
     )
 
 
@@ -343,36 +366,54 @@ def fetch_saved_climate_series_batch(
     )
 
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        if batch_plan.shared_tasks:
-            shared_futures = {
-                executor.submit(_run_shared_task, config, task, event_queue.put): task
-                for task in batch_plan.shared_tasks
-            }
-            _drain_futures(
-                shared_futures,
-                event_queue=event_queue,
-                progress_callback=progress_callback,
-            )
-
-        location_futures = {
-            executor.submit(
-                _run_location_task,
-                config,
-                request,
-                spatial_mode,
-                radius_km,
-                event_queue.put,
-            ): request
+        shared_futures = {
+            executor.submit(_run_shared_task, config, task, event_queue.put): task
+            for task in batch_plan.shared_tasks
+        }
+        location_futures: dict[Future[Any], LocationClimateRequest] = {}
+        pending_locations = {request.location_key: request for request in batch_plan.location_requests}
+        completed_shared_work_ids: set[str] = set()
+        batch_plan_location_dependencies = getattr(batch_plan, "location_dependencies", {}) or {}
+        location_dependencies = {
+            request.location_key: set(batch_plan_location_dependencies.get(request.location_key, ()))
             for request in batch_plan.location_requests
         }
-        results.update(
-            _drain_futures(
-                location_futures,
-                event_queue=event_queue,
-                progress_callback=progress_callback,
-                returns_location_frames=True,
-            )
-        )
+
+        def _submit_ready_locations() -> None:
+            for location_key, request in list(pending_locations.items()):
+                dependencies = location_dependencies.get(location_key, set())
+                if not dependencies.issubset(completed_shared_work_ids):
+                    continue
+                location_futures[
+                    executor.submit(
+                        _run_location_task,
+                        config,
+                        request,
+                        spatial_mode,
+                        radius_km,
+                        event_queue.put,
+                    )
+                ] = request
+                pending_locations.pop(location_key, None)
+
+        _submit_ready_locations()
+
+        while shared_futures or location_futures:
+            pending = set(shared_futures) | set(location_futures)
+            done, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            _drain_progress_queue(event_queue, progress_callback)
+            for future in done:
+                if future in shared_futures:
+                    task = shared_futures.pop(future)
+                    future.result()
+                    completed_shared_work_ids.add(task.work_id)
+                    _submit_ready_locations()
+                    continue
+
+                request = location_futures.pop(future)
+                results[request.location_key] = future.result()
+            if not done:
+                _drain_progress_queue(event_queue, progress_callback)
 
     _drain_progress_queue(event_queue, progress_callback)
     return results
@@ -444,6 +485,13 @@ def _run_shared_task(
         ensure_twcr_year_cached(
             int(task.year),
             raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
+            progress_callback=progress_callback,
+        )
+    elif task.task_kind == "twcr_grid":
+        ensure_twcr_grid_year_cached(
+            int(task.year),
+            area=task.area,
+            grid_request_cache_dir=TWCR_GRID_REQUEST_CACHE_DIR,
             progress_callback=progress_callback,
         )
     else:  # pragma: no cover - defensive guard.
@@ -528,6 +576,7 @@ def _request_area_for_location_request(
 def _add_missing_cds_timeline_tasks(
     shared_tasks: dict[str, SharedClimateTask],
     *,
+    location_dependencies: set[str],
     request: LocationClimateRequest,
     dataset,
     area: tuple[float, float, float, float],
@@ -559,6 +608,7 @@ def _add_missing_cds_timeline_tasks(
         )
         if work_path.exists():
             continue
+        location_dependencies.add(str(work_path))
         shared_tasks.setdefault(
             str(work_path),
             SharedClimateTask(
@@ -577,6 +627,7 @@ def _add_missing_cds_timeline_tasks(
 def _add_missing_cds_window_task(
     shared_tasks: dict[str, SharedClimateTask],
     *,
+    location_dependencies: set[str],
     request: LocationClimateRequest,
     dataset,
     area: tuple[float, float, float, float],
@@ -608,6 +659,7 @@ def _add_missing_cds_window_task(
     )
     if work_path.exists():
         return
+    location_dependencies.add(str(work_path))
     shared_tasks.setdefault(
         str(work_path),
         SharedClimateTask(
@@ -626,6 +678,7 @@ def _add_missing_cds_window_task(
 def _add_missing_twcr_timeline_tasks(
     shared_tasks: dict[str, SharedClimateTask],
     *,
+    location_dependencies: set[str],
     request: LocationClimateRequest,
     start_date: date,
     end_date: date,
@@ -644,12 +697,21 @@ def _add_missing_twcr_timeline_tasks(
     cached_frame = _load_cached_temperature_series(timeline_cache_path)
     missing_ranges = _missing_temperature_ranges(cached_frame, start_date=start_date, end_date=end_date)
     for missing_start, missing_end in missing_ranges:
-        _register_twcr_year_tasks(shared_tasks, start_date=missing_start, end_date=missing_end)
+        _register_twcr_download_tasks(
+            shared_tasks,
+            location_dependencies=location_dependencies,
+            request=request,
+            start_date=missing_start,
+            end_date=missing_end,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+        )
 
 
 def _add_missing_twcr_window_tasks(
     shared_tasks: dict[str, SharedClimateTask],
     *,
+    location_dependencies: set[str],
     request: LocationClimateRequest,
     start_date: date,
     end_date: date,
@@ -667,29 +729,49 @@ def _add_missing_twcr_window_tasks(
         boundary_bbox=request.boundary_bbox,
     ):
         return
-    _register_twcr_year_tasks(shared_tasks, start_date=start_date, end_date=end_date)
+    _register_twcr_download_tasks(
+        shared_tasks,
+        location_dependencies=location_dependencies,
+        request=request,
+        start_date=start_date,
+        end_date=end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+    )
 
 
-def _register_twcr_year_tasks(
+def _register_twcr_download_tasks(
     shared_tasks: dict[str, SharedClimateTask],
     *,
+    location_dependencies: set[str],
+    request: LocationClimateRequest,
     start_date: date,
     end_date: date,
+    spatial_mode: str,
+    radius_km: float | None,
 ) -> None:
-    for year in estimate_missing_twcr_years(
-        start_date,
-        end_date,
+    for work in plan_twcr_downloads(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        start_date=start_date,
+        end_date=end_date,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=request.boundary_geojson,
+        boundary_bbox=request.boundary_bbox,
         raw_year_cache_dir=TWCR_RAW_YEAR_CACHE_DIR,
+        grid_request_cache_dir=TWCR_GRID_REQUEST_CACHE_DIR,
     ):
-        work_id = str(TWCR_RAW_YEAR_CACHE_DIR / f"air.2m.mon.mean.{year:04d}.nc")
+        location_dependencies.add(work.work_id)
         shared_tasks.setdefault(
-            work_id,
+            work.work_id,
             SharedClimateTask(
-                work_id=work_id,
+                work_id=work.work_id,
                 source_id=TWCR_SOURCE_ID,
                 label=TWCR_DISPLAY_NAME,
-                task_kind="twcr_year",
-                year=year,
+                task_kind=work.task_kind,
+                year=work.year,
+                area=work.area,
             ),
         )
 
@@ -864,14 +946,15 @@ def climate_stack_note(start_date: date, end_date: date) -> str | None:
 def preflight_download_message(estimate: ClimateDownloadEstimate) -> tuple[str, str] | None:
     if not estimate.uses_historical_fallback:
         return None
-    if not estimate.uncached_era5_bridge_fetches and not estimate.uncached_twcr_years:
+    if not estimate.uncached_era5_bridge_fetches and not estimate.uncached_twcr_fetches:
         return None
 
-    twcr_year_count = len(estimate.uncached_twcr_years)
-    level = "warning" if twcr_year_count > 10 or estimate.uncached_era5_bridge_fetches > 2 else "info"
+    twcr_fetch_count = int(estimate.uncached_twcr_fetches)
+    level = "warning" if twcr_fetch_count > 10 or estimate.uncached_era5_bridge_fetches > 2 else "info"
     message_parts: list[str] = []
-    if twcr_year_count:
-        message_parts.append(f"{twcr_year_count} uncached 20CRv3 yearly monthly files")
+    if twcr_fetch_count:
+        noun = "request" if twcr_fetch_count == 1 else "requests"
+        message_parts.append(f"{twcr_fetch_count} uncached 20CRv3 yearly {noun}")
     if estimate.uncached_era5_bridge_fetches:
         noun = "fetch" if estimate.uncached_era5_bridge_fetches == 1 else "fetches"
         message_parts.append(f"{estimate.uncached_era5_bridge_fetches} ERA5 bridge {noun}")

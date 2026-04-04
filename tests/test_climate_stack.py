@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from threading import Lock
+from time import sleep
 from datetime import date
 from unittest.mock import patch
 
@@ -70,11 +72,12 @@ class ClimateStackTests(unittest.TestCase):
             ClimateDownloadEstimate(
                 uses_historical_fallback=True,
                 uncached_era5_bridge_fetches=3,
+                uncached_twcr_fetches=12,
                 uncached_twcr_years=tuple(range(1836, 1848)),
             )
         )
         self.assertEqual(level, "warning")
-        self.assertIn("12 uncached 20CRv3 yearly monthly files", message)
+        self.assertIn("12 uncached 20CRv3 yearly requests", message)
         self.assertIn("Later runs reuse the local cache", message)
 
     def test_estimate_climate_downloads_counts_bridge_fetches_and_twcr_years(self) -> None:
@@ -111,6 +114,7 @@ class ClimateStackTests(unittest.TestCase):
 
         self.assertTrue(estimate.uses_historical_fallback)
         self.assertEqual(estimate.uncached_era5_bridge_fetches, 2)
+        self.assertEqual(estimate.uncached_twcr_fetches, 4)
         self.assertEqual(estimate.uncached_twcr_years, (1938, 1939, 1961, 1962))
 
     def test_build_climate_batch_plan_deduplicates_shared_era5_tasks(self) -> None:
@@ -154,6 +158,39 @@ class ClimateStackTests(unittest.TestCase):
         ]
         self.assertEqual(len(visible_tasks), 1)
 
+    def test_build_climate_batch_plan_uses_twcr_subset_tasks_for_small_requests(self) -> None:
+        requests = [
+            LocationClimateRequest(
+                location_key="a",
+                display_name="A",
+                latitude=48.2082,
+                longitude=16.3738,
+                boundary_geojson=None,
+                boundary_bbox=None,
+                start_date=date(1938, 1, 1),
+                end_date=date(1938, 12, 31),
+            ),
+        ]
+
+        with patch("mystripes.climate_stack._load_cached_temperature_series", return_value=None), patch(
+            "pathlib.Path.exists",
+            return_value=False,
+        ), patch(
+            "mystripes.climate_stack._needs_cds_window_fetch",
+            return_value=False,
+        ):
+            batch_plan = build_climate_batch_plan(requests, spatial_mode="single_cell")
+
+        visible_twcr_tasks = [
+            task
+            for task in batch_plan.shared_tasks
+            if task.source_id == "20crv3"
+            and task.year == 1938
+            and task.task_kind == "twcr_grid"
+        ]
+        self.assertEqual(len(visible_twcr_tasks), 1)
+        self.assertIn(visible_twcr_tasks[0].work_id, batch_plan.location_dependencies["a"])
+
     def test_fetch_saved_climate_series_batch_reports_shared_and_location_progress(self) -> None:
         request = LocationClimateRequest(
             location_key="a",
@@ -170,7 +207,7 @@ class ClimateStackTests(unittest.TestCase):
 
         with patch(
             "mystripes.climate_stack.build_climate_batch_plan",
-            return_value=ClimateBatchPlan(location_requests=(request,), shared_tasks=()),
+            return_value=ClimateBatchPlan(location_requests=(request,), shared_tasks=(), location_dependencies={}),
         ), patch(
             "mystripes.climate_stack.fetch_saved_climate_series",
             return_value=frame,
@@ -185,6 +222,79 @@ class ClimateStackTests(unittest.TestCase):
         self.assertEqual(events[0]["stage"], "batch_plan")
         self.assertEqual(events[1]["stage"], "location_started")
         self.assertEqual(events[2]["stage"], "location_finished")
+
+    def test_fetch_saved_climate_series_batch_starts_ready_locations_before_all_shared_tasks_finish(self) -> None:
+        request_a = LocationClimateRequest(
+            location_key="a",
+            display_name="A",
+            latitude=48.2082,
+            longitude=16.3738,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            start_date=date(1955, 1, 1),
+            end_date=date(1955, 12, 31),
+        )
+        request_b = LocationClimateRequest(
+            location_key="b",
+            display_name="B",
+            latitude=52.52,
+            longitude=13.405,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            start_date=date(1955, 1, 1),
+            end_date=date(1955, 12, 31),
+        )
+        task_a = type(
+            "Task",
+            (),
+            {"work_id": "shared-a", "source_id": "era5_land", "label": "ERA5", "task_kind": "cds_grid", "year": None, "area": None, "dataset": None, "start_date": None, "end_date": None},
+        )()
+        task_b = type(
+            "Task",
+            (),
+            {"work_id": "shared-b", "source_id": "era5_land", "label": "ERA5", "task_kind": "cds_grid", "year": None, "area": None, "dataset": None, "start_date": None, "end_date": None},
+        )()
+        execution_log: list[str] = []
+        log_lock = Lock()
+        frame = _monthly_frame("1955-01-01", 1, [1.0])
+
+        def fake_run_shared_task(config, task, progress_callback):
+            with log_lock:
+                execution_log.append(f"shared_start:{task.work_id}")
+            sleep(0.02 if task.work_id == "shared-a" else 0.25)
+            with log_lock:
+                execution_log.append(f"shared_finish:{task.work_id}")
+
+        def fake_run_location_task(config, request, spatial_mode, radius_km, progress_callback):
+            with log_lock:
+                execution_log.append(f"location_start:{request.location_key}")
+            return frame
+
+        with patch(
+            "mystripes.climate_stack.build_climate_batch_plan",
+            return_value=ClimateBatchPlan(
+                location_requests=(request_a, request_b),
+                shared_tasks=(task_a, task_b),
+                location_dependencies={"a": ("shared-a",), "b": ("shared-b",)},
+            ),
+        ), patch(
+            "mystripes.climate_stack._run_shared_task",
+            side_effect=fake_run_shared_task,
+        ), patch(
+            "mystripes.climate_stack._run_location_task",
+            side_effect=fake_run_location_task,
+        ):
+            result = fetch_saved_climate_series_batch(
+                config=CDSConfig(url="https://example.invalid/api", key="secret"),
+                location_requests=[request_a, request_b],
+                max_workers=3,
+            )
+
+        self.assertEqual(set(result), {"a", "b"})
+        self.assertLess(
+            execution_log.index("location_start:a"),
+            execution_log.index("shared_finish:shared-b"),
+        )
 
     def test_fetch_saved_climate_series_keeps_modern_era5_land_data_unchanged(self) -> None:
         land_frame = _monthly_frame("1955-01-01", 2, [1.0, 2.0])

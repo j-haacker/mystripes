@@ -32,7 +32,7 @@ STRIPES_COLORS = [
 _WATERMARK_PADDING_RATIO = 0.02
 _PERIOD_INDICATOR_MIN_GAP_PIXELS = 1.0
 _PERIOD_INDICATOR_PADDING_RATIO = 0.02
-_OUTWARD_ARROW_STYLE = ArrowStyle.CurveFilledAB(head_length=0.65, head_width=0.12)
+_OUTWARD_ARROW_STYLE = ArrowStyle.Simple(head_length=0.8, head_width=0.24, tail_width=0.08)
 
 _WATERMARK_HORIZONTAL_POSITIONS = {
     "left": (_WATERMARK_PADDING_RATIO, "left", 1 - _WATERMARK_PADDING_RATIO),
@@ -277,22 +277,24 @@ def _add_period_indicators(
                     )
                 )
         else:
-            axis.add_patch(
-                FancyArrowPatch(
-                    (start_fraction, line_y),
-                    (end_fraction, line_y),
-                    transform=axis.transAxes,
-                    arrowstyle=_OUTWARD_ARROW_STYLE,
-                    mutation_scale=arrow_scale,
-                    linewidth=line_width,
-                    color=color,
-                    alpha=0.92,
-                    zorder=4,
-                    clip_on=True,
-                    shrinkA=0,
-                    shrinkB=0,
+            midpoint_fraction = (start_fraction + end_fraction) / 2.0
+            for end_position in (start_fraction, end_fraction):
+                axis.add_patch(
+                    FancyArrowPatch(
+                        (midpoint_fraction, line_y),
+                        (end_position, line_y),
+                        transform=axis.transAxes,
+                        arrowstyle=_OUTWARD_ARROW_STYLE,
+                        mutation_scale=arrow_scale,
+                        linewidth=line_width,
+                        color=color,
+                        alpha=0.92,
+                        zorder=4,
+                        clip_on=True,
+                        shrinkA=0,
+                        shrinkB=0,
+                    )
                 )
-            )
 
         label = str(indicator["label"])
         if label:

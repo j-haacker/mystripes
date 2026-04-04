@@ -213,6 +213,23 @@ class PublicAPITests(unittest.TestCase):
             height_px=120,
             dpi=100,
             period_indicators=period_indicators,
+            period_indicator_style="scale_bar",
+            period_indicator_vertical_align="bottom",
+            period_indicator_color="#ffeeaa",
+        )
+
+        axis = figure.axes[0]
+        scale_bar_bottom_label_y = float(axis.texts[0].get_position()[1])
+        scale_bar_bottom_line_y = float(axis.lines[0].get_ydata()[0])
+        self.assertGreater(scale_bar_bottom_label_y, scale_bar_bottom_line_y)
+        figure.clf()
+
+        figure = plot_stripes(
+            stripe_data,
+            width_px=600,
+            height_px=120,
+            dpi=100,
+            period_indicators=period_indicators,
             period_indicator_style="outward_arrows",
             period_indicator_vertical_align="bottom",
             period_indicator_color="#ffeeaa",
@@ -220,6 +237,7 @@ class PublicAPITests(unittest.TestCase):
 
         axis = figure.axes[0]
         self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
+        self.assertAlmostEqual(float(axis.texts[0].get_position()[1]), scale_bar_bottom_label_y, places=6)
         self.assertEqual(len(axis.lines), 0)
         self.assertEqual(len(axis.patches), 2)
         figure.clf()

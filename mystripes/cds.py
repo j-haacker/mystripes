@@ -7,6 +7,8 @@ import math
 import os
 import tempfile
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 
 try:
     import tomllib
@@ -14,6 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
     import tomli as tomllib
 from datetime import date
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
@@ -22,19 +25,53 @@ import requests
 
 from mystripes.models import CDSConfig, DatasetWindow
 
-DATASET_NAME = "reanalysis-era5-land-monthly-means"
-DATASET_URL = "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"
-DATASET_LICENCE_URL = f"{DATASET_URL}?tab=download#manage-licences"
-CONSTRAINTS_URL = (
-    "https://cds.climate.copernicus.eu/api/catalogue/v1/collections/"
-    f"{DATASET_NAME}/constraints.json"
+@dataclass(frozen=True)
+class CDSMonthlyDataset:
+    name: str
+    display_name: str
+    dataset_url: str
+    grid_step_degrees: float
+
+    @property
+    def licence_url(self) -> str:
+        return f"{self.dataset_url}?tab=download#manage-licences"
+
+    @property
+    def constraints_url(self) -> str:
+        return (
+            "https://cds.climate.copernicus.eu/api/catalogue/v1/collections/"
+            f"{self.name}/constraints.json"
+        )
+
+
+ERA5_LAND_MONTHLY_DATASET = CDSMonthlyDataset(
+    name="reanalysis-era5-land-monthly-means",
+    display_name="ERA5-Land monthly averaged reanalysis",
+    dataset_url="https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means",
+    grid_step_degrees=0.1,
 )
+ERA5_MONTHLY_DATASET = CDSMonthlyDataset(
+    name="reanalysis-era5-single-levels-monthly-means",
+    display_name="ERA5 monthly averaged data on single levels",
+    dataset_url="https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means",
+    grid_step_degrees=0.25,
+)
+
+DATASET_NAME = ERA5_LAND_MONTHLY_DATASET.name
+DATASET_URL = ERA5_LAND_MONTHLY_DATASET.dataset_url
+DATASET_LICENCE_URL = ERA5_LAND_MONTHLY_DATASET.licence_url
+CONSTRAINTS_URL = ERA5_LAND_MONTHLY_DATASET.constraints_url
 DEFAULT_CDSAPI_URL = "https://cds.climate.copernicus.eu/api"
 LOCAL_CDS_CREDENTIALS_PATH = Path(".streamlit/local_cds_credentials.toml")
 TEMPERATURE_CACHE_DIR = Path(".mystripes-cache")
 TEMPERATURE_REQUEST_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-requests"
+TEMPERATURE_GRID_REQUEST_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-grid-requests"
 TEMPERATURE_TIMELINE_CACHE_DIR = TEMPERATURE_CACHE_DIR / "temperature-timelines"
-GRID_STEP_DEGREES = 0.1
+GRID_STEP_DEGREES = ERA5_LAND_MONTHLY_DATASET.grid_step_degrees
+
+_CACHE_PATH_LOCKS: dict[str, threading.Lock] = {}
+_CACHE_PATH_LOCKS_GUARD = threading.Lock()
+_NETCDF_READ_LOCK = threading.Lock()
 
 
 class CDSCredentialsMissingError(RuntimeError):
@@ -46,6 +83,18 @@ class CDSRequestError(RuntimeError):
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+@contextmanager
+def cache_path_lock(path: Path):
+    key = str(path.resolve())
+    with _CACHE_PATH_LOCKS_GUARD:
+        lock = _CACHE_PATH_LOCKS.setdefault(key, threading.Lock())
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _emit_progress(
@@ -60,10 +109,10 @@ def _emit_progress(
     progress_callback(event)
 
 
-def get_dataset_window() -> DatasetWindow:
-    response = requests.get(CONSTRAINTS_URL, timeout=30)
+def get_dataset_window(dataset: CDSMonthlyDataset = ERA5_LAND_MONTHLY_DATASET) -> DatasetWindow:
+    response = requests.get(dataset.constraints_url, timeout=30)
     response.raise_for_status()
-    return _dataset_window_from_constraints(response.json())
+    return _dataset_window_from_constraints(response.json(), dataset_name=dataset.display_name)
 
 
 def resolve_cds_config(
@@ -140,11 +189,13 @@ def fetch_point_temperature_series(
     longitude: float,
     start_date: date,
     end_date: date,
+    dataset: CDSMonthlyDataset = ERA5_LAND_MONTHLY_DATASET,
     spatial_mode: str = "single_cell",
     radius_km: float | None = None,
     boundary_geojson: Mapping[str, Any] | None = None,
     boundary_bbox: tuple[float, float, float, float] | None = None,
     cache_dir: Path | None = TEMPERATURE_REQUEST_CACHE_DIR,
+    grid_cache_dir: Path | None = TEMPERATURE_GRID_REQUEST_CACHE_DIR,
     progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     if start_date > end_date:
@@ -156,6 +207,7 @@ def fetch_point_temperature_series(
     if cache_dir is not None:
         cache_path = _temperature_series_cache_path(
             cache_dir=cache_dir,
+            dataset=dataset,
             latitude=latitude,
             longitude=longitude,
             start_date=start_date,
@@ -170,20 +222,36 @@ def fetch_point_temperature_series(
             _emit_progress(
                 progress_callback,
                 "request_cache_hit",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
                 start_date=start_date.isoformat(),
                 end_date=end_date.isoformat(),
                 request_count=0,
             )
             return cached_frame
 
-    try:
-        import cdsapi
-    except ModuleNotFoundError as exc:
-        raise CDSRequestError(
-            "cdsapi is not installed. Install the dependencies from requirements.txt."
-        ) from exc
-
     request_area = _request_area(
+        latitude=latitude,
+        longitude=longitude,
+        grid_step_degrees=dataset.grid_step_degrees,
+        spatial_mode=spatial_mode,
+        radius_km=radius_km,
+        boundary_geojson=boundary_geojson,
+        boundary_bbox=boundary_bbox,
+    )
+    grid_frame = fetch_temperature_grid_frame(
+        config=config,
+        start_date=start_date,
+        end_date=end_date,
+        area=request_area,
+        dataset=dataset,
+        target_latitude=latitude,
+        target_longitude=longitude,
+        cache_dir=grid_cache_dir,
+        progress_callback=progress_callback,
+    )
+    combined = _aggregate_spatial_selection(
+        grid_frame=grid_frame,
         latitude=latitude,
         longitude=longitude,
         spatial_mode=spatial_mode,
@@ -191,104 +259,182 @@ def fetch_point_temperature_series(
         boundary_geojson=boundary_geojson,
         boundary_bbox=boundary_bbox,
     )
-    requests_to_run = _build_monthly_requests(
-        start_date=start_date,
-        end_date=end_date,
-        area=request_area,
-    )
-    total_requests = len(requests_to_run)
-    _emit_progress(
-        progress_callback,
-        "request_plan",
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        request_count=total_requests,
-    )
-    client = cdsapi.Client(url=config.url, key=config.key, quiet=True, progress=False)
-    frames: list[pd.DataFrame] = []
-    last_error: Exception | None = None
-
-    for request_index, request in enumerate(requests_to_run, start=1):
-        request_years = [str(value) for value in request.get("year", [])]
-        request_months = [str(value) for value in request.get("month", [])]
-        request_year_start = request_years[0] if request_years else ""
-        request_year_end = request_years[-1] if request_years else ""
-        _emit_progress(
-            progress_callback,
-            "request_started",
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            request_index=request_index,
-            request_count=total_requests,
-            request_year_start=request_year_start,
-            request_year_end=request_year_end,
-            month_count=len(request_months),
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = Path(tmpdir) / "era5_land_monthly_request.nc"
-            try:
-                client.retrieve(DATASET_NAME, request, str(target))
-            except Exception as exc:  # pragma: no cover - depends on external service.
-                last_error = exc
-                _emit_progress(
-                    progress_callback,
-                    "request_failed",
-                    start_date=start_date.isoformat(),
-                    end_date=end_date.isoformat(),
-                    request_index=request_index,
-                    request_count=total_requests,
-                    request_year_start=request_year_start,
-                    request_year_end=request_year_end,
-                    month_count=len(request_months),
-                    message=_explain_cds_error(exc),
-                )
-                break
-
-            grid_frame = parse_temperature_file(
-                target,
-                target_latitude=latitude,
-                target_longitude=longitude,
-            )
-            frames.append(
-                _aggregate_spatial_selection(
-                    grid_frame=grid_frame,
-                    latitude=latitude,
-                    longitude=longitude,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=boundary_geojson,
-                    boundary_bbox=boundary_bbox,
-                )
-            )
-        _emit_progress(
-            progress_callback,
-            "request_finished",
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            request_index=request_index,
-            request_count=total_requests,
-            request_year_start=request_year_start,
-            request_year_end=request_year_end,
-            month_count=len(request_months),
-        )
-
-    if not frames:
-        if last_error is not None:
-            raise CDSRequestError(_explain_cds_error(last_error))
-        raise CDSRequestError("ERA5-Land CDS request returned no monthly data.")
-
-    combined = pd.concat(frames, ignore_index=True).sort_values("timestamp").drop_duplicates("timestamp")
-    combined = combined.reset_index(drop=True)
     if cache_path is not None:
         _store_cached_temperature_series(cache_path, combined)
     _emit_progress(
         progress_callback,
         "point_fetch_completed",
+        dataset=dataset.name,
+        dataset_label=dataset.display_name,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
-        request_count=total_requests,
+        request_count=1,
     )
     return combined
+
+
+def fetch_temperature_grid_frame(
+    config: CDSConfig,
+    start_date: date,
+    end_date: date,
+    area: tuple[float, float, float, float],
+    dataset: CDSMonthlyDataset = ERA5_LAND_MONTHLY_DATASET,
+    target_latitude: float = 0.0,
+    target_longitude: float = 0.0,
+    cache_dir: Path | None = TEMPERATURE_GRID_REQUEST_CACHE_DIR,
+    progress_callback: ProgressCallback | None = None,
+) -> pd.DataFrame:
+    if start_date > end_date:
+        raise ValueError("Start date must be on or before end date.")
+
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _temperature_grid_request_cache_path(
+            cache_dir=cache_dir,
+            dataset=dataset,
+            start_date=start_date,
+            end_date=end_date,
+            area=area,
+        )
+        cached_frame = _load_cached_temperature_grid(cache_path)
+        if cached_frame is not None:
+            _emit_progress(
+                progress_callback,
+                "request_cache_hit",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_count=0,
+                cache_scope="shared_grid",
+                work_id=str(cache_path),
+            )
+            return cached_frame
+
+    with cache_path_lock(cache_path) if cache_path is not None else nullcontext():
+        if cache_path is not None:
+            cached_frame = _load_cached_temperature_grid(cache_path)
+            if cached_frame is not None:
+                _emit_progress(
+                    progress_callback,
+                    "request_cache_hit",
+                    dataset=dataset.name,
+                    dataset_label=dataset.display_name,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    request_count=0,
+                    cache_scope="shared_grid",
+                    work_id=str(cache_path),
+                )
+                return cached_frame
+
+        try:
+            import cdsapi
+        except ModuleNotFoundError as exc:
+            raise CDSRequestError(
+                "cdsapi is not installed. Install the dependencies from requirements.txt."
+            ) from exc
+
+        requests_to_run = _build_monthly_requests(
+            start_date=start_date,
+            end_date=end_date,
+            area=area,
+        )
+        total_requests = len(requests_to_run)
+        _emit_progress(
+            progress_callback,
+            "request_plan",
+            dataset=dataset.name,
+            dataset_label=dataset.display_name,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            request_count=total_requests,
+            cache_scope="shared_grid",
+            work_id=str(cache_path) if cache_path is not None else None,
+        )
+        client = cdsapi.Client(url=config.url, key=config.key, quiet=True, progress=False)
+        frames: list[pd.DataFrame] = []
+        last_error: Exception | None = None
+
+        for request_index, request in enumerate(requests_to_run, start=1):
+            request_years = [str(value) for value in request.get("year", [])]
+            request_months = [str(value) for value in request.get("month", [])]
+            request_year_start = request_years[0] if request_years else ""
+            request_year_end = request_years[-1] if request_years else ""
+            _emit_progress(
+                progress_callback,
+                "request_started",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_index=request_index,
+                request_count=total_requests,
+                request_year_start=request_year_start,
+                request_year_end=request_year_end,
+                month_count=len(request_months),
+                cache_scope="shared_grid",
+                work_id=str(cache_path) if cache_path is not None else None,
+            )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                target = Path(tmpdir) / "climate_monthly_request.nc"
+                try:
+                    client.retrieve(dataset.name, request, str(target))
+                except Exception as exc:  # pragma: no cover - depends on external service.
+                    last_error = exc
+                    _emit_progress(
+                        progress_callback,
+                        "request_failed",
+                        dataset=dataset.name,
+                        dataset_label=dataset.display_name,
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                        request_index=request_index,
+                        request_count=total_requests,
+                        request_year_start=request_year_start,
+                        request_year_end=request_year_end,
+                        month_count=len(request_months),
+                        message=_explain_cds_error(exc),
+                        cache_scope="shared_grid",
+                        work_id=str(cache_path) if cache_path is not None else None,
+                    )
+                    break
+
+                frames.append(
+                    parse_temperature_file(
+                        target,
+                        target_latitude=target_latitude,
+                        target_longitude=target_longitude,
+                    )
+                )
+            _emit_progress(
+                progress_callback,
+                "request_finished",
+                dataset=dataset.name,
+                dataset_label=dataset.display_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                request_index=request_index,
+                request_count=total_requests,
+                request_year_start=request_year_start,
+                request_year_end=request_year_end,
+                month_count=len(request_months),
+                cache_scope="shared_grid",
+                work_id=str(cache_path) if cache_path is not None else None,
+            )
+
+        if not frames:
+            if last_error is not None:
+                raise CDSRequestError(_explain_cds_error(last_error))
+            raise CDSRequestError(f"{dataset.display_name} CDS request returned no monthly data.")
+
+        combined = pd.concat(frames, ignore_index=True).sort_values(
+            ["timestamp", "grid_latitude", "grid_longitude"]
+        )
+        combined = combined.drop_duplicates(["timestamp", "grid_latitude", "grid_longitude"]).reset_index(drop=True)
+        if cache_path is not None:
+            _store_cached_temperature_grid(cache_path, combined)
+        return combined
 
 
 def fetch_saved_temperature_series(
@@ -297,6 +443,7 @@ def fetch_saved_temperature_series(
     longitude: float,
     start_date: date,
     end_date: date,
+    dataset: CDSMonthlyDataset = ERA5_LAND_MONTHLY_DATASET,
     spatial_mode: str = "single_cell",
     radius_km: float | None = None,
     boundary_geojson: Mapping[str, Any] | None = None,
@@ -313,6 +460,7 @@ def fetch_saved_temperature_series(
     if cache_dir is not None:
         cache_path = _temperature_timeline_cache_path(
             cache_dir=cache_dir,
+            dataset=dataset,
             latitude=latitude,
             longitude=longitude,
             spatial_mode=spatial_mode,
@@ -329,6 +477,8 @@ def fetch_saved_temperature_series(
         _emit_progress(
             progress_callback,
             "timeline_cache_hit",
+            dataset=dataset.name,
+            dataset_label=dataset.display_name,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
             missing_range_count=0,
@@ -338,6 +488,8 @@ def fetch_saved_temperature_series(
     _emit_progress(
         progress_callback,
         "timeline_fetch_plan",
+        dataset=dataset.name,
+        dataset_label=dataset.display_name,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
         missing_range_count=len(missing_ranges),
@@ -353,6 +505,8 @@ def fetch_saved_temperature_series(
         _emit_progress(
             progress_callback,
             "missing_range_started",
+            dataset=dataset.name,
+            dataset_label=dataset.display_name,
             range_index=range_index,
             range_count=total_missing_ranges,
             range_start=missing_start.isoformat(),
@@ -376,6 +530,7 @@ def fetch_saved_temperature_series(
                 longitude=longitude,
                 start_date=missing_start,
                 end_date=missing_end,
+                dataset=dataset,
                 spatial_mode=spatial_mode,
                 radius_km=radius_km,
                 boundary_geojson=boundary_geojson,
@@ -387,6 +542,8 @@ def fetch_saved_temperature_series(
         _emit_progress(
             progress_callback,
             "missing_range_finished",
+            dataset=dataset.name,
+            dataset_label=dataset.display_name,
             range_index=range_index,
             range_count=total_missing_ranges,
             range_start=missing_start.isoformat(),
@@ -400,6 +557,8 @@ def fetch_saved_temperature_series(
     _emit_progress(
         progress_callback,
         "timeline_fetch_completed",
+        dataset=dataset.name,
+        dataset_label=dataset.display_name,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
         missing_range_count=total_missing_ranges,
@@ -448,41 +607,54 @@ def parse_temperature_netcdf_grid(
             "netCDF4 is not installed. Install the dependencies from requirements.txt."
         ) from exc
 
-    with netCDF4.Dataset(path) as dataset:
-        time_variable_name = _find_first_name(dataset.variables, ("valid_time", "time"))
-        if time_variable_name is None:
-            raise CDSRequestError("Could not identify the time variable in the CDS NetCDF file.")
+    # netCDF4/HDF5 file access is not reliably thread-safe across parallel
+    # location assembly, so keep the entire open/read/close sequence serialized.
+    with _NETCDF_READ_LOCK:
+        try:
+            dataset_handle = netCDF4.Dataset(path)
+        except (OSError, RuntimeError) as exc:
+            raise CDSRequestError(f"Could not open the climate-data NetCDF file: {exc}") from exc
 
-        temperature_variable_name = _resolve_temperature_variable_name(dataset)
-        temperature_variable = dataset.variables[temperature_variable_name]
-        time_variable = dataset.variables[time_variable_name]
+        with dataset_handle as dataset:
+            time_variable_name = _find_first_name(dataset.variables, ("valid_time", "time"))
+            if time_variable_name is None:
+                raise CDSRequestError("Could not identify the time variable in the CDS NetCDF file.")
 
-        latitude_name = _find_first_name(dataset.variables, ("latitude", "lat"))
-        longitude_name = _find_first_name(dataset.variables, ("longitude", "lon"))
-        if latitude_name is None or longitude_name is None:
-            raise CDSRequestError("Could not identify latitude/longitude coordinates in the CDS NetCDF file.")
+            temperature_variable_name = _resolve_temperature_variable_name(dataset)
+            temperature_variable = dataset.variables[temperature_variable_name]
+            time_variable = dataset.variables[time_variable_name]
 
-        latitudes = np.asarray(dataset.variables[latitude_name][:], dtype=float).reshape(-1)
-        longitudes = np.asarray(dataset.variables[longitude_name][:], dtype=float).reshape(-1)
-        data = _extract_temperature_cube(
-            dataset=dataset,
-            variable_name=temperature_variable_name,
-            time_variable_name=time_variable_name,
-            latitude_name=latitude_name,
-            longitude_name=longitude_name,
-        )
-        timestamps = _extract_timestamps(netCDF4, time_variable)
+            latitude_name = _find_first_name(dataset.variables, ("latitude", "lat"))
+            longitude_name = _find_first_name(dataset.variables, ("longitude", "lon"))
+            if latitude_name is None or longitude_name is None:
+                raise CDSRequestError("Could not identify latitude/longitude coordinates in the CDS NetCDF file.")
 
-        units = str(getattr(temperature_variable, "units", "") or getattr(temperature_variable, "GRIB_units", ""))
-        temperature_c = data - 273.15 if units.upper().startswith("K") else data
-        frame = _grid_frame_from_cube(timestamps, latitudes, longitudes, temperature_c)
-        frame = frame.dropna().sort_values("timestamp").reset_index(drop=True)
-        if frame.empty:
-            raise CDSRequestError("The CDS NetCDF file did not contain usable temperature rows.")
-        return frame
+            latitudes = np.asarray(dataset.variables[latitude_name][:], dtype=float).reshape(-1)
+            longitudes = _normalize_longitudes(
+                np.asarray(dataset.variables[longitude_name][:], dtype=float).reshape(-1)
+            )
+            data = _extract_temperature_cube(
+                dataset=dataset,
+                variable_name=temperature_variable_name,
+                time_variable_name=time_variable_name,
+                latitude_name=latitude_name,
+                longitude_name=longitude_name,
+            )
+            timestamps = _extract_timestamps(netCDF4, time_variable)
+
+            units = str(getattr(temperature_variable, "units", "") or getattr(temperature_variable, "GRIB_units", ""))
+            temperature_c = data - 273.15 if units.upper().startswith("K") else data
+            frame = _grid_frame_from_cube(timestamps, latitudes, longitudes, temperature_c)
+            frame = frame.dropna().sort_values("timestamp").reset_index(drop=True)
+            if frame.empty:
+                raise CDSRequestError("The CDS NetCDF file did not contain usable temperature rows.")
+            return frame
 
 
-def _dataset_window_from_constraints(constraints: list[dict[str, Any]]) -> DatasetWindow:
+def _dataset_window_from_constraints(
+    constraints: list[dict[str, Any]],
+    dataset_name: str = "dataset",
+) -> DatasetWindow:
     available_months: list[date] = []
 
     for entry in constraints:
@@ -504,7 +676,7 @@ def _dataset_window_from_constraints(constraints: list[dict[str, Any]]) -> Datas
                 available_months.append(date(int(year_text), int(month_text), 1))
 
     if not available_months:
-        raise CDSRequestError("Could not determine the ERA5-Land monthly availability window from CDS.")
+        raise CDSRequestError(f"Could not determine the {dataset_name} availability window from CDS.")
 
     min_start = min(available_months)
     max_month = max(available_months)
@@ -554,6 +726,7 @@ def _build_monthly_requests(
 
 def _temperature_timeline_cache_path(
     cache_dir: Path,
+    dataset: CDSMonthlyDataset,
     latitude: float,
     longitude: float,
     spatial_mode: str,
@@ -564,7 +737,7 @@ def _temperature_timeline_cache_path(
     payload = {
         "cache_version": 1,
         "cache_type": "timeline",
-        "dataset": DATASET_NAME,
+        "dataset": dataset.name,
         "latitude": round(latitude, 6),
         "longitude": round(longitude, 6),
         "spatial_mode": spatial_mode,
@@ -629,6 +802,7 @@ def _previous_month_end(value: date) -> date:
 
 def _temperature_series_cache_path(
     cache_dir: Path,
+    dataset: CDSMonthlyDataset,
     latitude: float,
     longitude: float,
     start_date: date,
@@ -640,7 +814,7 @@ def _temperature_series_cache_path(
 ) -> Path:
     payload = {
         "cache_version": 1,
-        "dataset": DATASET_NAME,
+        "dataset": dataset.name,
         "latitude": round(latitude, 6),
         "longitude": round(longitude, 6),
         "start_date": start_date.isoformat(),
@@ -649,6 +823,27 @@ def _temperature_series_cache_path(
         "radius_km": None if radius_km is None else round(radius_km, 6),
         "boundary_geojson": boundary_geojson,
         "boundary_bbox": list(boundary_bbox) if boundary_bbox is not None else None,
+    }
+    key = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return cache_dir / f"{key}.csv"
+
+
+def _temperature_grid_request_cache_path(
+    cache_dir: Path,
+    dataset: CDSMonthlyDataset,
+    start_date: date,
+    end_date: date,
+    area: tuple[float, float, float, float],
+) -> Path:
+    payload = {
+        "cache_version": 1,
+        "cache_type": "grid_request",
+        "dataset": dataset.name,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "area": [round(value, 6) for value in area],
     }
     key = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
@@ -675,7 +870,36 @@ def _load_cached_temperature_series(cache_path: Path) -> pd.DataFrame | None:
     return frame.sort_values("timestamp").reset_index(drop=True)
 
 
+def _load_cached_temperature_grid(cache_path: Path) -> pd.DataFrame | None:
+    if not cache_path.exists():
+        return None
+
+    try:
+        frame = pd.read_csv(cache_path)
+    except Exception:
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    required_columns = {"timestamp", "temperature_c", "sample_days", "grid_latitude", "grid_longitude"}
+    if not required_columns.issubset(frame.columns):
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    return frame.sort_values(["timestamp", "grid_latitude", "grid_longitude"]).reset_index(drop=True)
+
+
 def _store_cached_temperature_series(cache_path: Path, frame: pd.DataFrame) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = frame.copy()
+    payload["timestamp"] = pd.to_datetime(payload["timestamp"], utc=True)
+
+    temporary_path = cache_path.with_suffix(".tmp")
+    payload.to_csv(temporary_path, index=False)
+    temporary_path.replace(cache_path)
+
+
+def _store_cached_temperature_grid(cache_path: Path, frame: pd.DataFrame) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     payload = frame.copy()
     payload["timestamp"] = pd.to_datetime(payload["timestamp"], utc=True)
@@ -702,8 +926,9 @@ def _monthly_request_payload(
     }
 
 
-def _snap_to_grid(value: float) -> float:
-    return round(round(value / GRID_STEP_DEGREES) * GRID_STEP_DEGREES, 1)
+def _snap_to_grid(value: float, grid_step_degrees: float = GRID_STEP_DEGREES) -> float:
+    decimals = _grid_rounding_decimals(grid_step_degrees)
+    return round(round(value / grid_step_degrees) * grid_step_degrees, decimals)
 
 
 def _next_month(current: date) -> date:
@@ -713,7 +938,7 @@ def _next_month(current: date) -> date:
 
 
 def _resolve_temperature_variable_name(dataset) -> str:
-    candidates = ("2m_temperature", "t2m", "temperature", "value")
+    candidates = ("2m_temperature", "t2m", "temperature", "air", "value")
     for name in candidates:
         if name in dataset.variables:
             return name
@@ -726,7 +951,7 @@ def _resolve_temperature_variable_name(dataset) -> str:
         if units.upper().startswith("K") and getattr(variable, "dimensions", ()):
             return name
 
-    raise CDSRequestError("Could not identify the temperature variable in the CDS NetCDF file.")
+    raise CDSRequestError("Could not identify the temperature variable in the climate-data NetCDF file.")
 
 
 def _find_first_name(mapping: Mapping[str, Any], candidates: tuple[str, ...]) -> str | None:
@@ -819,15 +1044,16 @@ def _request_area(
     radius_km: float | None,
     boundary_geojson: Mapping[str, Any] | None,
     boundary_bbox: tuple[float, float, float, float] | None,
+    grid_step_degrees: float = GRID_STEP_DEGREES,
 ) -> tuple[float, float, float, float]:
     if spatial_mode == "single_cell":
-        snapped_latitude = _snap_to_grid(latitude)
-        snapped_longitude = _snap_to_grid(longitude)
+        snapped_latitude = _snap_to_grid(latitude, grid_step_degrees)
+        snapped_longitude = _snap_to_grid(longitude, grid_step_degrees)
         return snapped_latitude, snapped_longitude, snapped_latitude, snapped_longitude
 
     if spatial_mode == "radius":
         effective_radius = radius_km or 25.0
-        return _radius_request_area(latitude, longitude, effective_radius)
+        return _radius_request_area(latitude, longitude, effective_radius, grid_step_degrees)
 
     if spatial_mode == "boundary":
         bbox = boundary_bbox or _geometry_bounding_box(boundary_geojson)
@@ -836,12 +1062,17 @@ def _request_area(
                 "Boundary aggregation requires a place search result with a municipality or district boundary."
             )
         south, north, west, east = bbox
-        return _snap_area(north, west, south, east)
+        return _snap_area(north, west, south, east, grid_step_degrees)
 
     raise CDSRequestError(f"Unsupported spatial aggregation mode: {spatial_mode}")
 
 
-def _radius_request_area(latitude: float, longitude: float, radius_km: float) -> tuple[float, float, float, float]:
+def _radius_request_area(
+    latitude: float,
+    longitude: float,
+    radius_km: float,
+    grid_step_degrees: float,
+) -> tuple[float, float, float, float]:
     delta_latitude = radius_km / 111.32
     cos_latitude = max(abs(math.cos(math.radians(latitude))), 0.01)
     delta_longitude = radius_km / (111.32 * cos_latitude)
@@ -850,23 +1081,47 @@ def _radius_request_area(latitude: float, longitude: float, radius_km: float) ->
         longitude - delta_longitude,
         latitude - delta_latitude,
         longitude + delta_longitude,
+        grid_step_degrees,
     )
 
 
-def _snap_area(north: float, west: float, south: float, east: float) -> tuple[float, float, float, float]:
-    north = min(89.0, _snap_up_to_grid(north))
-    south = max(-89.0, _snap_down_to_grid(south))
-    west = max(-180.0, _snap_down_to_grid(west))
-    east = min(180.0, _snap_up_to_grid(east))
+def _snap_area(
+    north: float,
+    west: float,
+    south: float,
+    east: float,
+    grid_step_degrees: float,
+) -> tuple[float, float, float, float]:
+    north = min(89.0, _snap_up_to_grid(north, grid_step_degrees))
+    south = max(-89.0, _snap_down_to_grid(south, grid_step_degrees))
+    west = max(-180.0, _snap_down_to_grid(west, grid_step_degrees))
+    east = min(180.0, _snap_up_to_grid(east, grid_step_degrees))
     return north, west, south, east
 
 
-def _snap_down_to_grid(value: float) -> float:
-    return round(math.floor(value / GRID_STEP_DEGREES) * GRID_STEP_DEGREES, 1)
+def _snap_down_to_grid(value: float, grid_step_degrees: float) -> float:
+    decimals = _grid_rounding_decimals(grid_step_degrees)
+    return round(math.floor(value / grid_step_degrees) * grid_step_degrees, decimals)
 
 
-def _snap_up_to_grid(value: float) -> float:
-    return round(math.ceil(value / GRID_STEP_DEGREES) * GRID_STEP_DEGREES, 1)
+def _snap_up_to_grid(value: float, grid_step_degrees: float) -> float:
+    decimals = _grid_rounding_decimals(grid_step_degrees)
+    return round(math.ceil(value / grid_step_degrees) * grid_step_degrees, decimals)
+
+
+def _grid_rounding_decimals(grid_step_degrees: float) -> int:
+    if math.isclose(grid_step_degrees, round(grid_step_degrees)):
+        return 0
+    text = f"{grid_step_degrees:.6f}".rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.rsplit(".", maxsplit=1)[1])
+
+
+def _normalize_longitudes(values: np.ndarray) -> np.ndarray:
+    normalized = ((values + 180.0) % 360.0) - 180.0
+    normalized[np.isclose(normalized, -180.0) & np.isclose(values, 180.0)] = 180.0
+    return normalized
 
 
 def _grid_frame_from_cube(

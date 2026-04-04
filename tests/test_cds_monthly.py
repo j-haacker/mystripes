@@ -7,16 +7,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from mystripes.cds import (
+    ERA5_MONTHLY_DATASET,
     CDSRequestError,
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,
     _request_area,
+    _resolve_temperature_variable_name,
     fetch_point_temperature_series,
     fetch_saved_temperature_series,
     parse_temperature_file,
+    parse_temperature_netcdf_grid,
 )
 from mystripes.models import CDSConfig
 
@@ -56,6 +60,31 @@ class MonthlyCDSTests(unittest.TestCase):
         )
 
         self.assertEqual(area, (48.2, 16.4, 48.2, 16.4))
+
+    def test_request_area_can_use_era5_bridge_grid_spacing(self) -> None:
+        area = _request_area(
+            latitude=48.2082,
+            longitude=16.3738,
+            spatial_mode="single_cell",
+            radius_km=None,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            grid_step_degrees=ERA5_MONTHLY_DATASET.grid_step_degrees,
+        )
+
+        self.assertEqual(area, (48.25, 16.25, 48.25, 16.25))
+
+    def test_resolve_temperature_variable_name_accepts_twcr_air_variable(self) -> None:
+        dataset = SimpleNamespace(
+            variables={
+                "time": object(),
+                "lat": object(),
+                "lon": object(),
+                "air": SimpleNamespace(units="K", dimensions=("time", "lat", "lon")),
+            }
+        )
+
+        self.assertEqual(_resolve_temperature_variable_name(dataset), "air")
 
     def test_radius_aggregation_averages_cells_inside_radius(self) -> None:
         timestamp = pd.Timestamp("2020-01-01T00:00:00Z")
@@ -127,6 +156,82 @@ class MonthlyCDSTests(unittest.TestCase):
 
         self.assertIn("binary file", str(context.exception))
 
+    def test_parse_temperature_netcdf_grid_serializes_netcdf_reads(self) -> None:
+        events: list[str] = []
+
+        class RecordingLock:
+            def __enter__(self):
+                events.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("lock_exit")
+                return False
+
+        class FakeVariable:
+            def __init__(self, values, *, units: str = "", dimensions: tuple[str, ...] = ()) -> None:
+                self._values = values
+                self.units = units
+                self.dimensions = dimensions
+
+            def __getitem__(self, key):
+                return self._values
+
+        class FakeDataset:
+            def __init__(self) -> None:
+                events.append("dataset_open")
+                self.variables = {
+                    "time": FakeVariable([0.0]),
+                    "lat": FakeVariable([48.0]),
+                    "lon": FakeVariable([16.0]),
+                    "air": FakeVariable([[[273.15]]], units="K", dimensions=("time", "lat", "lon")),
+                }
+
+            def __enter__(self):
+                events.append("dataset_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("dataset_exit")
+                return False
+
+        fake_netcdf4 = SimpleNamespace(Dataset=lambda path: FakeDataset())
+        expected = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [0.0],
+                "sample_days": [31],
+                "grid_latitude": [48.0],
+                "grid_longitude": [16.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "response.nc"
+            path.write_bytes(b"CDF")
+
+            with patch.dict("sys.modules", {"netCDF4": fake_netcdf4}), patch(
+                "mystripes.cds._NETCDF_READ_LOCK",
+                RecordingLock(),
+            ), patch(
+                "mystripes.cds._extract_temperature_cube",
+                return_value=np.array([[[273.15]]], dtype=float),
+            ), patch(
+                "mystripes.cds._extract_timestamps",
+                return_value=[pd.Timestamp("2020-01-01T00:00:00Z")],
+            ), patch(
+                "mystripes.cds._grid_frame_from_cube",
+                return_value=expected,
+            ):
+                frame = parse_temperature_netcdf_grid(
+                    path,
+                    target_latitude=48.2,
+                    target_longitude=16.3,
+                )
+
+        self.assertEqual(events, ["lock_enter", "dataset_open", "dataset_enter", "dataset_exit", "lock_exit"])
+        pd.testing.assert_frame_equal(frame, expected)
+
     def test_fetch_point_temperature_series_reuses_cached_response(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
 
@@ -148,13 +253,26 @@ class MonthlyCDSTests(unittest.TestCase):
                 "sample_days": [31, 29],
             }
         )
+        grid_frame = pd.DataFrame(
+            {
+                "timestamp": [
+                    pd.Timestamp("2020-01-01T00:00:00Z"),
+                    pd.Timestamp("2020-02-01T00:00:00Z"),
+                ],
+                "temperature_c": [1.5, 2.5],
+                "sample_days": [31, 29],
+                "grid_latitude": [48.2, 48.2],
+                "grid_longitude": [16.4, 16.4],
+            }
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir) / "cache"
+            grid_cache_dir = Path(tmpdir) / "grid-cache"
             fake_cdsapi = SimpleNamespace(Client=FakeClient)
 
             with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
-                with patch("mystripes.cds.parse_temperature_file", return_value=pd.DataFrame()):
+                with patch("mystripes.cds.parse_temperature_file", return_value=grid_frame):
                     with patch("mystripes.cds._aggregate_spatial_selection", return_value=aggregated):
                         first = fetch_point_temperature_series(
                             config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
@@ -163,6 +281,7 @@ class MonthlyCDSTests(unittest.TestCase):
                             start_date=date(2020, 1, 1),
                             end_date=date(2020, 2, 29),
                             cache_dir=cache_dir,
+                            grid_cache_dir=grid_cache_dir,
                         )
                         second = fetch_point_temperature_series(
                             config=CDSConfig(url="https://example.invalid/api", key="different-token"),
@@ -171,6 +290,7 @@ class MonthlyCDSTests(unittest.TestCase):
                             start_date=date(2020, 1, 1),
                             end_date=date(2020, 2, 29),
                             cache_dir=cache_dir,
+                            grid_cache_dir=grid_cache_dir,
                         )
 
         self.assertEqual(len(calls), 1)
@@ -195,11 +315,20 @@ class MonthlyCDSTests(unittest.TestCase):
                 "sample_days": [31],
             }
         )
+        grid_frame = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [1.5],
+                "sample_days": [31],
+                "grid_latitude": [48.2],
+                "grid_longitude": [16.4],
+            }
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             fake_cdsapi = SimpleNamespace(Client=FakeClient)
             with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
-                with patch("mystripes.cds.parse_temperature_file", return_value=pd.DataFrame()):
+                with patch("mystripes.cds.parse_temperature_file", return_value=grid_frame):
                     with patch("mystripes.cds._aggregate_spatial_selection", return_value=aggregated):
                         frame = fetch_point_temperature_series(
                             config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
@@ -208,6 +337,7 @@ class MonthlyCDSTests(unittest.TestCase):
                             start_date=date(2020, 1, 1),
                             end_date=date(2020, 2, 29),
                             cache_dir=Path(tmpdir) / "cache",
+                            grid_cache_dir=Path(tmpdir) / "grid-cache",
                             progress_callback=events.append,
                         )
 
@@ -218,6 +348,65 @@ class MonthlyCDSTests(unittest.TestCase):
         self.assertEqual(events[1]["request_index"], 1)
         self.assertEqual(events[1]["request_count"], 1)
         pd.testing.assert_frame_equal(frame, aggregated)
+
+    def test_fetch_point_temperature_series_reuses_shared_grid_cache_for_same_request_area(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class FakeClient:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+
+            def retrieve(self, dataset_name: str, request: dict[str, object], target: str) -> None:
+                calls.append((dataset_name, request))
+                Path(target).write_bytes(b"CDF")
+
+        grid_frame = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [11.0],
+                "sample_days": [31],
+                "grid_latitude": [48.2],
+                "grid_longitude": [16.4],
+            }
+        )
+        aggregated = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [11.0],
+                "sample_days": [31],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            aggregate_cache_dir = Path(tmpdir) / "aggregate-cache"
+            grid_cache_dir = Path(tmpdir) / "grid-cache"
+            fake_cdsapi = SimpleNamespace(Client=FakeClient)
+
+            with patch.dict("sys.modules", {"cdsapi": fake_cdsapi}):
+                with patch("mystripes.cds.parse_temperature_file", return_value=grid_frame):
+                    with patch("mystripes.cds._aggregate_spatial_selection", return_value=aggregated):
+                        first = fetch_point_temperature_series(
+                            config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                            latitude=48.2082,
+                            longitude=16.3738,
+                            start_date=date(2020, 1, 1),
+                            end_date=date(2020, 1, 31),
+                            cache_dir=aggregate_cache_dir,
+                            grid_cache_dir=grid_cache_dir,
+                        )
+                        second = fetch_point_temperature_series(
+                            config=CDSConfig(url="https://example.invalid/api", key="secret-token"),
+                            latitude=48.2482,
+                            longitude=16.3988,
+                            start_date=date(2020, 1, 1),
+                            end_date=date(2020, 1, 31),
+                            cache_dir=aggregate_cache_dir,
+                            grid_cache_dir=grid_cache_dir,
+                        )
+
+        self.assertEqual(len(calls), 1)
+        pd.testing.assert_frame_equal(first, aggregated)
+        pd.testing.assert_frame_equal(second, aggregated)
 
     def test_fetch_saved_temperature_series_forwards_progress_events(self) -> None:
         jan_feb = pd.DataFrame(

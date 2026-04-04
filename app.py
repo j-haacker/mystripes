@@ -16,11 +16,18 @@ from mystripes.cds import (
     CDSRequestError,
     DEFAULT_CDSAPI_URL,
     clear_local_cds_config,
-    fetch_saved_temperature_series,
-    get_dataset_window,
     load_local_cds_config,
     resolve_cds_config,
     save_local_cds_config,
+)
+from mystripes.climate_stack import (
+    build_climate_batch_plan,
+    build_location_climate_requests,
+    climate_stack_note,
+    estimate_climate_downloads,
+    fetch_saved_climate_series_batch,
+    get_climate_dataset_window,
+    preflight_download_message,
 )
 from mystripes.cookie_consent import (
     COOKIE_CONSENT_COOKIE_NAME,
@@ -42,13 +49,28 @@ from mystripes.notices import (
     CONTRIBUTING_GUIDE_URL,
     PROJECT_ISSUES_URL,
     PROJECT_REPOSITORY_URL,
+    ERA5_MONTHLY_DATASET_DOI,
+    ERA5_MONTHLY_DATASET_NAME,
+    ERA5_REFERENCE_CITATION,
+    ERA5_MONTHLY_DATASET_URL,
+    ERA5_LAND_MONTHLY_DATASET_DOI,
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
     GENERATED_GRAPHICS_CC0_NOTICE,
+    NASA_GISTEMP_REFERENCE_CITATION,
+    NASA_GISTEMP_SHORT_SOURCE_CREDIT,
+    NASA_GISTEMP_SOURCE_CREDIT,
+    NASA_GISTEMP_WEB_CITATION_GUIDANCE,
+    NASA_GISTEMP_WEB_CITATION_TEMPLATE,
     SHOW_YOUR_STRIPES_CREDIT,
     SHOW_YOUR_STRIPES_URL,
     SOFTWARE_MIT_NOTICE,
+    TWCR_ACKNOWLEDGEMENT_TEXT,
+    TWCR_FOUNDATIONAL_REFERENCE_CITATION,
+    TWCR_MONTHLY_DATASET_NAME,
+    TWCR_MONTHLY_DATASET_URL,
+    TWCR_REFERENCE_CITATION,
     copernicus_credit_notice,
 )
 from mystripes.plotting import export_figure_bytes, render_stripes_figure
@@ -83,7 +105,7 @@ st.set_page_config(
 
 @st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
 def cached_dataset_window():
-    return get_dataset_window()
+    return get_climate_dataset_window()
 
 
 @st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
@@ -414,50 +436,134 @@ def _request_batch_label(event: dict[str, object]) -> str:
 
     month_count = int(event.get("month_count") or 0)
     if month_count:
-        parts.append(f"{month_count} months/year")
+        noun = "month" if month_count == 1 else "months"
+        parts.append(f"{month_count} {noun}")
 
     return ", ".join(parts)
 
 
 def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     stage = str(event.get("stage") or "")
+    purpose = str(event.get("purpose") or "source")
     range_index = int(event.get("range_index") or 0)
     range_count = int(event.get("range_count") or 0)
     range_start = str(event.get("range_start") or "")
     range_end = str(event.get("range_end") or "")
+    dataset_label = str(event.get("dataset_label") or event.get("source_label") or "climate data")
+    request_origin = str(event.get("request_origin") or "")
+    location_label = str(event.get("location_label") or "")
+    cache_scope = str(event.get("cache_scope") or "")
+
+    if stage == "batch_plan":
+        return (
+            f"Planned {int(event.get('total_shared_tasks') or 0)} shared source tasks for "
+            f"{int(event.get('total_locations') or 0)} locations."
+        )
+    if stage == "shared_task_started":
+        source_label = str(event.get("source_label") or dataset_label)
+        return f"Starting shared {source_label} preparation."
+    if stage == "shared_task_finished":
+        source_label = str(event.get("source_label") or dataset_label)
+        return f"Finished shared {source_label} preparation."
+    if stage == "location_started":
+        return f"Building the combined climate timeline for {location_label or 'one location'}."
+    if stage == "location_finished":
+        return f"{location_label or 'One location'} is ready."
 
     if stage == "timeline_cache_hit":
-        return "Using the saved full timeline from local cache."
+        return f"Using the saved {dataset_label} timeline from local cache."
     if stage == "timeline_fetch_plan":
         missing_range_count = int(event.get("missing_range_count") or 0)
         noun = "segment" if missing_range_count == 1 else "segments"
         if bool(event.get("has_cached_data")):
-            return f"Refreshing {missing_range_count} missing timeline {noun} from CDS."
-        return f"Preparing {missing_range_count} timeline {noun} from CDS."
+            return f"Refreshing {missing_range_count} missing {dataset_label} timeline {noun}."
+        return f"Preparing {missing_range_count} {dataset_label} timeline {noun}."
     if stage == "missing_range_started":
         return f"Timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
     if stage == "request_cache_hit":
-        return f"Using a saved request chunk for {range_start} to {range_end}."
+        if cache_scope == "shared_year":
+            return f"Using a saved shared {dataset_label} yearly file."
+        if cache_scope == "shared_grid":
+            return f"Using a saved shared {dataset_label} grid request."
+        if cache_scope == "shared_grid_window":
+            return f"Using a saved shared {dataset_label} bbox window."
+        if purpose == "calibration":
+            return f"Using a saved {dataset_label} calibration window."
+        return f"Using a saved {dataset_label} request chunk for {range_start} to {range_end}."
     if stage == "request_plan":
         request_count = int(event.get("request_count") or 0)
-        noun = "batch" if request_count == 1 else "batches"
-        return f"Need {request_count} CDS request {noun} for this timeline segment."
+        if str(event.get("dataset") or "").startswith("reanalysis-era5"):
+            noun = "batch" if request_count == 1 else "batches"
+        else:
+            noun = "bbox request" if request_count == 1 else "bbox requests"
+        if purpose == "calibration":
+            return f"Preparing {request_count} {dataset_label} calibration {noun}."
+        return f"Need {request_count} {dataset_label} request {noun} for this timeline segment."
     if stage == "request_started":
         batch_label = _request_batch_label(event)
-        return f"Downloading CDS {batch_label}." if batch_label else "Downloading CDS data."
+        request_scope = str(event.get("request_scope") or "")
+        if request_scope == "bbox_window":
+            batch_label = batch_label or "bbox window"
+        if request_origin == "local_cache":
+            return (
+                f"Reading saved {dataset_label} {batch_label}."
+                if batch_label
+                else f"Reading saved {dataset_label} data."
+            )
+        if purpose == "calibration":
+            return (
+                f"Downloading {dataset_label} calibration {batch_label}."
+                if batch_label
+                else f"Downloading {dataset_label} calibration data."
+            )
+        return (
+            f"Downloading {dataset_label} {batch_label}."
+            if batch_label
+            else f"Downloading {dataset_label} data."
+        )
     if stage == "request_finished":
         batch_label = _request_batch_label(event)
-        return f"Finished CDS {batch_label}." if batch_label else "Finished a CDS request batch."
+        request_scope = str(event.get("request_scope") or "")
+        if request_scope == "bbox_window":
+            batch_label = batch_label or "bbox window"
+        if request_origin == "local_cache":
+            return (
+                f"Finished reading saved {dataset_label} {batch_label}."
+                if batch_label
+                else f"Finished reading saved {dataset_label} data."
+            )
+        if purpose == "calibration":
+            return (
+                f"Finished {dataset_label} calibration {batch_label}."
+                if batch_label
+                else f"Finished a {dataset_label} calibration step."
+            )
+        return (
+            f"Finished {dataset_label} {batch_label}."
+            if batch_label
+            else f"Finished a {dataset_label} request step."
+        )
     if stage == "request_failed":
         message = str(event.get("message") or "")
         return message or "A CDS request failed."
+    if stage == "request_recovery":
+        message = str(event.get("message") or "")
+        return message or f"Retrying {dataset_label} after a cache read problem."
     if stage == "point_fetch_completed":
-        return "Parsed downloaded monthly data for the current timeline segment."
+        if purpose == "calibration":
+            return f"Prepared the {dataset_label} calibration monthly series."
+        return f"Prepared monthly {dataset_label} data for the current timeline segment."
     if stage == "missing_range_finished":
         return f"Finished timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
     if stage == "timeline_fetch_completed":
         return "Saved the refreshed timeline to the local cache."
-    return "Loading ERA5-Land monthly data..."
+    if stage == "source_started":
+        source_label = str(event.get("source_label") or "Climate source")
+        return f"Switching to {source_label} for {event.get('source_start')} to {event.get('source_end')}."
+    if stage == "source_finished":
+        source_label = str(event.get("source_label") or "Climate source")
+        return f"Finished {source_label} for this time slice."
+    return "Loading climate data..."
 
 
 def _render_temperature_fetch_progress(
@@ -465,50 +571,59 @@ def _render_temperature_fetch_progress(
     *,
     total_locations: int,
     completed_locations: int,
-    current_location_index: int,
-    current_location_label: str,
+    total_shared_tasks: int,
+    completed_shared_tasks: int,
+    active_locations: int,
+    stage_label: str,
     current_detail: str,
-    completed_request_batches: int,
-    current_request_index: int,
-    current_request_count: int,
-    current_request_complete: bool,
+    recent_updates: list[str],
     started_at: float,
     active: bool,
 ) -> None:
     normalized_total_locations = max(1, total_locations)
-    in_location_fraction = 0.0
-    if active and current_request_count > 0:
-        completed_in_current = current_request_index
-        if not current_request_complete:
-            completed_in_current = max(0, completed_in_current - 1)
-        in_location_fraction = min(1.0, completed_in_current / current_request_count)
-    elif active and current_location_label:
-        in_location_fraction = min(0.06, 1.0 / normalized_total_locations)
-
-    overall_fraction = min(1.0, (completed_locations + in_location_fraction) / normalized_total_locations)
+    location_fraction = min(1.0, completed_locations / normalized_total_locations)
+    shared_fraction = 1.0 if total_shared_tasks == 0 else min(1.0, completed_shared_tasks / total_shared_tasks)
+    overall_fraction = location_fraction if total_shared_tasks == 0 else min(
+        1.0,
+        (0.65 * shared_fraction) + (0.35 * location_fraction),
+    )
     display_fraction = overall_fraction
     if active:
-        display_fraction = max(display_fraction, min(0.04, 1.0 / normalized_total_locations))
+        display_fraction = max(display_fraction, min(0.04, 1.0 / max(1, normalized_total_locations + total_shared_tasks)))
 
     elapsed_seconds = perf_counter() - started_at
     rate_parts: list[str] = []
     if elapsed_seconds > 0 and completed_locations > 0:
         rate_parts.append(_format_progress_rate(completed_locations * 60.0 / elapsed_seconds, "locations"))
-    if elapsed_seconds > 0 and completed_request_batches > 0:
-        rate_parts.append(_format_progress_rate(completed_request_batches * 60.0 / elapsed_seconds, "CDS batches"))
+    if elapsed_seconds > 0 and completed_shared_tasks > 0:
+        rate_parts.append(_format_progress_rate(completed_shared_tasks * 60.0 / elapsed_seconds, "shared tasks"))
 
-    title = "Preparing ERA5-Land monthly series"
-    if current_location_label:
-        title = f"Location {current_location_index}/{normalized_total_locations}: {current_location_label}"
+    title = "Preparing climate-data timelines"
+    if stage_label:
+        title = stage_label
     if not active and completed_locations >= total_locations:
         title = f"Loaded {completed_locations}/{normalized_total_locations} locations"
 
-    status_line = current_detail or "Loading ERA5-Land monthly data..."
+    status_line = current_detail or "Loading climate data..."
     summary_left = f"{completed_locations}/{normalized_total_locations} places ready"
     summary_right = " | ".join(rate_parts) if rate_parts else "Waiting for the first completed step..."
     elapsed_text = f"Elapsed {_format_progress_duration(elapsed_seconds)}"
     width_percent = max(0.0, min(100.0, display_fraction * 100.0))
     active_class = " mystripes-progress-fill-active" if active else ""
+    shared_summary = (
+        f"{completed_shared_tasks}/{total_shared_tasks} shared source tasks ready"
+        if total_shared_tasks
+        else "No shared source downloads needed"
+    )
+    active_summary = (
+        f"{active_locations} location timeline{'s' if active_locations != 1 else ''} active"
+        if active
+        else "No active location tasks"
+    )
+    updates_html = ""
+    if recent_updates:
+        items = "".join(f"<li>{escape(update)}</li>" for update in recent_updates[-4:])
+        updates_html = f'<ul class="mystripes-progress-updates">{items}</ul>'
 
     html = f'''
 <style>
@@ -575,9 +690,17 @@ def _render_temperature_fetch_progress(
   font-size: 0.84rem;
   color: #475569;
 }}
+.mystripes-progress-updates {{
+  margin: 0.7rem 0 0 1rem;
+  color: #475569;
+  font-size: 0.84rem;
+}}
+.mystripes-progress-updates li + li {{
+  margin-top: 0.2rem;
+}}
 </style>
 <div class="mystripes-progress-card">
-  <div class="mystripes-progress-kicker">ERA5-Land load progress</div>
+  <div class="mystripes-progress-kicker">Climate-data load progress</div>
   <div class="mystripes-progress-title">{escape(title)}</div>
   <div class="mystripes-progress-detail">{escape(status_line)}</div>
   <div class="mystripes-progress-track">
@@ -585,9 +708,12 @@ def _render_temperature_fetch_progress(
   </div>
   <div class="mystripes-progress-meta">
     <span>{escape(summary_left)}</span>
+    <span>{escape(shared_summary)}</span>
+    <span>{escape(active_summary)}</span>
     <span>{escape(summary_right)}</span>
     <span>{escape(elapsed_text)}</span>
   </div>
+  {updates_html}
 </div>
 '''
     placeholder.markdown(html, unsafe_allow_html=True)
@@ -799,8 +925,9 @@ def main() -> None:
     st.title("MyStripes")
     st.write(
         "Build climate strips from places and periods using ERA5-Land monthly temperature "
-        "data and export them as minimal graphic in PNG, SVG, or PDF. Use it to communicate "
-        "how you or some entity experienced climate change."
+        "data with automatic historical fallback for earlier years, and export them as "
+        "minimal graphic in PNG, SVG, or PDF. Use it to communicate how you or some entity "
+        "experienced climate change."
     )
     st.markdown(
         f"**[{SHOW_YOUR_STRIPES_CREDIT}]({SHOW_YOUR_STRIPES_URL})** "
@@ -828,7 +955,7 @@ def main() -> None:
     sidebar.header("Output")
     birth_date = sidebar.date_input(
         "Timeline start",
-        min_value=date(1900, 1, 1),
+        min_value=dataset_window.min_start,
         max_value=analysis_end,
         key="birth_date",
         help="For personal timelines, set this to your birth date.",
@@ -842,11 +969,11 @@ def main() -> None:
             "boundary": "Average grid cells inside place boundary",
         }[value],
         help=(
-            "Monthly data is downloaded from the ERA5-Land monthly dataset. Radius mode "
-            "averages grid cells inside the chosen radius. Boundary mode uses the "
-            "municipality, district, region, or other place polygon returned by the "
-            "geocoder when available, with a bounding-box fallback when only an area "
-            "extent is available."
+            "MyStripes uses ERA5-Land where available and automatically falls back to "
+            "historical datasets for earlier years. Radius mode averages grid cells inside "
+            "the chosen radius. Boundary mode uses the municipality, district, region, or "
+            "other place polygon returned by the geocoder when available, with a bounding-box "
+            "fallback when only an area extent is available."
         ),
     )
     radius_km = None
@@ -876,8 +1003,8 @@ def main() -> None:
         }[value],
         help=(
             "Choose which date window defines the per-location day-of-year climatology. "
-            "The app always downloads the full available ERA5-Land series for each unique "
-            "place, then derives the selected reference period from that shared data."
+            "The app reuses a shared climate-data timeline for each unique place and derives "
+            "the selected reference period from that cached data."
         ),
     )
     rolling_sample_mode = "monthly"
@@ -981,20 +1108,12 @@ def main() -> None:
     )
 
     _render_credit_and_license_panel(today.year)
+    _render_time_series_summary_note()
 
-    st.session_state.period_entries = _current_storyline_period_entries()
-    periods_preview, preview_errors = build_periods_from_entries(
-        entries=st.session_state.period_entries,
-        birth_date=birth_date,
-        analysis_end=analysis_end,
-        analysis_min_start=dataset_window.min_start,
-    )
-    debug_period_aliases = _build_debug_period_aliases(periods_preview)
-    debug_period_identifications = _build_debug_period_identifications(periods_preview)
     if birth_date < dataset_window.min_start:
         st.caption(
-            f"ERA5-Land begins on {dataset_window.min_start.isoformat()}, so the stripes start "
-            "there even if your timeline start or birth date is earlier."
+            f"The currently supported climate-data stack begins on {dataset_window.min_start.isoformat()}, "
+            "so the stripes start there even if your timeline start or birth date is earlier."
         )
 
     for index, entry in enumerate(st.session_state.period_entries):
@@ -1158,6 +1277,16 @@ def main() -> None:
                 / 100.0
             )
 
+    st.session_state.period_entries = _current_storyline_period_entries()
+    periods_preview, preview_errors = build_periods_from_entries(
+        entries=st.session_state.period_entries,
+        birth_date=birth_date,
+        analysis_end=analysis_end,
+        analysis_min_start=dataset_window.min_start,
+    )
+    debug_period_aliases = _build_debug_period_aliases(periods_preview)
+    debug_period_identifications = _build_debug_period_identifications(periods_preview)
+
     for error in preview_errors:
         st.error(error)
     if debug_period_identifications:
@@ -1174,19 +1303,21 @@ def main() -> None:
         period_aliases=debug_period_aliases,
     )
 
-    generate = st.button("Generate stripes", type="primary", disabled=bool(preview_errors))
-    if not generate:
-        return
-
-    if active_cds_config is None:
-        st.error(
-            "Missing CDS credentials. Add them to Streamlit secrets, environment variables, "
-            "enter a session-only override, or save a local token from the app sidebar."
-        )
-        _debug_print(debug_mode, "missing_cds_credentials", period_aliases=debug_period_aliases)
-        return
-
     report_start = max(birth_date, dataset_window.min_start)
+    first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
+    effective_report_end = analysis_end
+    reference_start = report_start
+    reference_end = analysis_end
+    baseline_label = ""
+    baseline_metric_value = ""
+    shared_climatology_label = ""
+    fetch_window_start = report_start
+    fetch_window_end = analysis_end
+    location_requests = []
+    climate_batch_plan = None
+    historical_note = None
+    historical_download_estimate = None
+    reference_resolution_error = None
     try:
         effective_report_end = latest_data_end_that_can_change_stripes(
             report_start=report_start,
@@ -1207,9 +1338,55 @@ def main() -> None:
             dataset_start=dataset_window.min_start,
             dataset_end=dataset_window.max_end,
         )
+        fetch_window_start = min(
+            max(dataset_window.min_start, report_start - timedelta(days=first_period_history_days)),
+            reference_start,
+        )
+        fetch_window_end = max(effective_report_end, reference_end)
+        location_requests = build_location_climate_requests(
+            periods_preview,
+            reference_start=reference_start,
+            reference_end=reference_end,
+            first_period_history_days=first_period_history_days,
+        )
+        historical_note = climate_stack_note(fetch_window_start, fetch_window_end)
+        historical_download_estimate = estimate_climate_downloads(
+            location_requests,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+        )
+        climate_batch_plan = build_climate_batch_plan(
+            location_requests,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+        )
     except ValueError as exc:
+        reference_resolution_error = str(exc)
         _debug_print(debug_mode, "reference_period_error", str(exc), period_aliases=debug_period_aliases)
         st.error(str(exc))
+
+    if historical_note and not preview_errors:
+        st.caption(historical_note)
+    if historical_download_estimate is not None and not preview_errors:
+        preflight_message = preflight_download_message(historical_download_estimate)
+        if preflight_message is not None:
+            level, message = preflight_message
+            getattr(st, level)(message)
+
+    generate = st.button(
+        "Generate stripes",
+        type="primary",
+        disabled=bool(preview_errors or reference_resolution_error),
+    )
+    if not generate:
+        return
+
+    if active_cds_config is None:
+        st.error(
+            "Missing CDS credentials. Add them to Streamlit secrets, environment variables, "
+            "enter a session-only override, or save a local token from the app sidebar."
+        )
+        _debug_print(debug_mode, "missing_cds_credentials", period_aliases=debug_period_aliases)
         return
 
     _debug_print(
@@ -1227,13 +1404,24 @@ def main() -> None:
                 "end": reference_end.isoformat(),
             },
             "fetch_window": {
-                "start": dataset_window.min_start.isoformat(),
-                "end": effective_report_end.isoformat(),
+                "start": fetch_window_start.isoformat(),
+                "end": fetch_window_end.isoformat(),
             },
             "aggregation_mode": aggregation_mode,
             "rolling_sample_mode": rolling_sample_mode,
             "rolling_strip_count": rolling_strip_count,
             "cds_source": active_cds_config.source,
+            "historical_download_estimate": (
+                None
+                if historical_download_estimate is None
+                else {
+                    "uses_historical_fallback": historical_download_estimate.uses_historical_fallback,
+                    "uncached_era5_bridge_fetches": historical_download_estimate.uncached_era5_bridge_fetches,
+                    "uncached_twcr_fetches": historical_download_estimate.uncached_twcr_fetches,
+                    "uncached_twcr_years": list(historical_download_estimate.uncached_twcr_years),
+                }
+            ),
+            "shared_climate_tasks": 0 if climate_batch_plan is None else len(climate_batch_plan.shared_tasks),
             "watermark": {
                 "text": watermark_text,
                 "horizontal_align": watermark_horizontal_align,
@@ -1260,35 +1448,30 @@ def main() -> None:
     )
 
     rolling_crop_start = min(period.start_date for period in periods_preview)
-    first_period_history_days = 364 if aggregation_mode == "rolling_365_day" else 0
-    unique_periods_by_location = {}
-    for period in periods_preview:
-        unique_periods_by_location.setdefault(period.location_key, period)
+    unique_periods_by_location = {request.location_key: request for request in location_requests}
 
     download_progress_placeholder = st.empty()
     download_started_at = perf_counter()
     total_locations = len(unique_periods_by_location)
+    total_shared_tasks = 0 if climate_batch_plan is None else len(climate_batch_plan.shared_tasks)
     completed_locations = 0
-    completed_request_batches = 0
-    current_location_index = 0
-    current_location_label = ""
-    current_detail = "Checking saved timelines and determining whether CDS updates are needed."
-    current_request_index = 0
-    current_request_count = 0
-    current_request_complete = False
+    completed_shared_task_ids: set[str] = set()
+    active_location_keys: set[str] = set()
+    stage_label = "Planning shared climate-data fetches"
+    current_detail = "Checking saved timelines and determining whether climate-data updates are needed."
+    recent_updates: list[str] = []
 
     def refresh_download_progress(*, active: bool) -> None:
         _render_temperature_fetch_progress(
             download_progress_placeholder,
             total_locations=total_locations,
             completed_locations=completed_locations,
-            current_location_index=current_location_index,
-            current_location_label=current_location_label,
+            total_shared_tasks=total_shared_tasks,
+            completed_shared_tasks=len(completed_shared_task_ids),
+            active_locations=len(active_location_keys),
+            stage_label=stage_label,
             current_detail=current_detail,
-            completed_request_batches=completed_request_batches,
-            current_request_index=current_request_index,
-            current_request_count=current_request_count,
-            current_request_complete=current_request_complete,
+            recent_updates=recent_updates,
             started_at=download_started_at,
             active=active,
         )
@@ -1296,86 +1479,67 @@ def main() -> None:
     refresh_download_progress(active=True)
 
     try:
-        location_frames = {}
-        for location_position, (location_key, period) in enumerate(unique_periods_by_location.items(), start=1):
-            current_location_index = location_position
-            current_location_label = period.display_name
-            current_detail = "Checking saved full timeline and missing months for this place."
-            current_request_index = 0
-            current_request_count = 0
-            current_request_complete = False
-            refresh_download_progress(active=True)
+        def _on_fetch_progress(event: dict[str, object]) -> None:
+            nonlocal completed_locations
+            nonlocal current_detail
+            nonlocal stage_label
 
-            def _on_fetch_progress(
-                event: dict[str, object],
-                *,
-                location_label: str = period.display_name,
-                location_index: int = location_position,
-            ) -> None:
-                nonlocal completed_request_batches
-                nonlocal current_detail
-                nonlocal current_location_index
-                nonlocal current_location_label
-                nonlocal current_request_complete
-                nonlocal current_request_count
-                nonlocal current_request_index
+            stage = str(event.get("stage") or "")
+            work_id = str(event.get("work_id") or "").strip()
+            location_key = str(event.get("location_key") or "").strip()
 
-                current_location_index = location_index
-                current_location_label = location_label
-                stage = str(event.get("stage") or "")
-                request_count = int(event.get("request_count") or 0)
-                request_index = int(event.get("request_index") or 0)
-                if request_count > 0:
-                    current_request_count = request_count
-                if request_index > 0:
-                    current_request_index = request_index
-                if stage == "request_finished":
-                    completed_request_batches += 1
-                current_request_complete = stage in {
-                    "request_cache_hit",
-                    "request_finished",
-                    "point_fetch_completed",
-                    "missing_range_finished",
-                    "timeline_cache_hit",
-                    "timeline_fetch_completed",
-                }
-                current_detail = _describe_temperature_fetch_event(event)
-                refresh_download_progress(active=True)
+            if stage == "batch_plan":
+                stage_label = "Planning shared climate-data fetches"
+            elif stage == "shared_task_started":
+                stage_label = "Downloading shared source files"
+            elif stage == "shared_task_finished" and work_id:
+                completed_shared_task_ids.add(work_id)
+                if len(completed_shared_task_ids) >= total_shared_tasks and total_locations:
+                    stage_label = "Assembling location timelines"
+            elif stage == "location_started":
+                if location_key:
+                    active_location_keys.add(location_key)
+                stage_label = "Assembling location timelines"
+            elif stage == "location_finished":
+                if location_key:
+                    active_location_keys.discard(location_key)
+                completed_locations += 1
+                if completed_locations >= total_locations:
+                    stage_label = "Finalizing climate-data timelines"
 
-            location_frames[location_key] = fetch_saved_temperature_series(
-                config=active_cds_config,
-                latitude=period.latitude,
-                longitude=period.longitude,
-                start_date=dataset_window.min_start,
-                end_date=effective_report_end,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=period.boundary_geojson,
-                boundary_bbox=period.bounding_box,
-                progress_callback=_on_fetch_progress,
+            detail = _describe_temperature_fetch_event(event)
+            if detail:
+                current_detail = detail
+                if not recent_updates or recent_updates[-1] != detail:
+                    recent_updates.append(detail)
+                    del recent_updates[:-4]
+
+            still_active = (
+                len(completed_shared_task_ids) < total_shared_tasks
+                or completed_locations < total_locations
+                or bool(active_location_keys)
             )
-            completed_locations += 1
-            current_detail = f"{period.display_name} is ready."
-            current_request_complete = True
-            refresh_download_progress(active=completed_locations < total_locations)
+            refresh_download_progress(active=still_active)
+
+        location_frames = fetch_saved_climate_series_batch(
+            config=active_cds_config,
+            location_requests=list(unique_periods_by_location.values()),
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            progress_callback=_on_fetch_progress,
+        )
 
         period_frames = [location_frames[period.location_key] for period in periods_preview]
     except (CDSRequestError, ValueError) as exc:
         _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
-        current_detail = (
-            f"Stopped while loading {current_location_label or 'the selected places'}: {exc}"
-        )
-        current_request_complete = True
+        current_detail = f"Stopped while loading climate data: {exc}"
+        stage_label = "Climate-data loading stopped"
         refresh_download_progress(active=False)
         st.error(str(exc))
         return
 
-    current_location_index = total_locations
-    current_location_label = "All selected places"
-    current_detail = "All requested ERA5-Land monthly series are ready."
-    current_request_index = 0
-    current_request_count = 0
-    current_request_complete = True
+    stage_label = "Climate-data timelines ready"
+    current_detail = "All requested climate-data timelines are ready."
     refresh_download_progress(active=False)
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
 
@@ -1775,14 +1939,36 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
 def _render_credit_and_license_panel(current_year: int) -> None:
     with st.expander("Credits and licenses", expanded=False):
         st.markdown(
-            f"- Climate data access: `{ERA5_LAND_MONTHLY_DATASET_NAME}`\n"
-            f"- Dataset page: {ERA5_LAND_MONTHLY_DATASET_URL}\n"
+            f"- Copernicus climate stack: `{ERA5_LAND_MONTHLY_DATASET_NAME}` "
+            f"{ERA5_LAND_MONTHLY_DATASET_URL} (DOI `{ERA5_LAND_MONTHLY_DATASET_DOI}`) and "
+            f"`{ERA5_MONTHLY_DATASET_NAME}` {ERA5_MONTHLY_DATASET_URL} "
+            f"(DOI `{ERA5_MONTHLY_DATASET_DOI}`), both distributed through the Climate Data Store "
+            "under the CDS `CC-BY` licence.\n"
             f"- Inspiration: {SHOW_YOUR_STRIPES_CREDIT} {SHOW_YOUR_STRIPES_URL}\n"
             f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
             f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
+            f"- Underlying ERA5 reference: {ERA5_REFERENCE_CITATION}\n"
+            f"- Historical fallback dataset: `{TWCR_MONTHLY_DATASET_NAME}` {TWCR_MONTHLY_DATASET_URL}\n"
+            f"- NOAA PSL requested 20CRv3 acknowledgment: {TWCR_ACKNOWLEDGEMENT_TEXT}\n"
+            f"- 20CRv3 references: {TWCR_REFERENCE_CITATION} {TWCR_FOUNDATIONAL_REFERENCE_CITATION}\n"
+            f"- Global-mean reference context: NASA GISTEMP {NASA_GISTEMP_GLOBAL_MEAN_URL}\n"
+            f"- NASA GISTEMP credit guidance: {NASA_GISTEMP_WEB_CITATION_GUIDANCE} "
+            f"Source credit: `{NASA_GISTEMP_SOURCE_CREDIT}` or `{NASA_GISTEMP_SHORT_SOURCE_CREDIT}`. "
+            f"Template: {NASA_GISTEMP_WEB_CITATION_TEMPLATE}\n"
+            f"- NASA GISTEMP scholarly reference: {NASA_GISTEMP_REFERENCE_CITATION}\n"
             f"- Generated graphics: {GENERATED_GRAPHICS_CC0_NOTICE}\n"
             f"- Software: {SOFTWARE_MIT_NOTICE}"
         )
+
+
+def _render_time_series_summary_note() -> None:
+    st.caption(
+        "Time-series summary: MyStripes loads monthly near-surface air temperatures for each place, "
+        "using ERA5-Land from 1950 onward, ERA5 for 1940-1949, and 20CRv3 before 1940 when needed. "
+        "Historical slices are anomaly-aligned to ERA5-Land, monthly values are expanded to daily "
+        "values within each period, merged along the active period schedule, and then compared with "
+        "the selected reference period to compute the climatology and anomalies behind the stripes."
+    )
 
 
 def _add_period_entry(analysis_end: date) -> None:
@@ -1922,7 +2108,7 @@ def _resolve_climatology_reference_period(
         if reference_end < reference_start:
             raise ValueError(
                 "The 1961-2010 climate-normal reference period is not available in the current "
-                "ERA5-Land dataset window."
+                "climate-data window."
             )
         date_range_label = f"{reference_start.isoformat()} to {reference_end.isoformat()}"
         metric_value = (

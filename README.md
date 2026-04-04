@@ -188,3 +188,5 @@ Streamlit Community Cloud checks dependency files in this order: `uv.lock`, `Pip
 - See [NOTICE.md](NOTICE.md) for the project data credit notice and dataset references.
 - The software is licensed under [LICENSE](LICENSE).
 - The generated graphic composition is offered under [LICENSE-graphics-CC0.md](LICENSE-graphics-CC0.md), with the important caveat that source-data attribution may still apply to Copernicus, NOAA PSL / 20CRv3, and NASA GISS / GISTEMP content.
+
+Time-series summary: MyStripes loads monthly near-surface air temperatures for each place, using ERA5-Land from 1950 onward, ERA5 for 1940-1949, and 20CRv3 before 1940 when needed. Historical slices are anomaly-aligned to ERA5-Land, monthly values are expanded to daily values within each period, merged along the active period schedule, and then compared with the selected reference period to compute the climatology and anomalies behind the stripes.

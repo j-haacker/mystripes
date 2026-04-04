@@ -1937,12 +1937,12 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
 def _render_credit_and_license_panel(current_year: int) -> None:
     with st.expander("Credits and licenses", expanded=False):
         st.markdown(
+            f"- Inspiration: {SHOW_YOUR_STRIPES_CREDIT} {SHOW_YOUR_STRIPES_URL}\n"
             f"- Copernicus climate stack: `{ERA5_LAND_MONTHLY_DATASET_NAME}` "
             f"{ERA5_LAND_MONTHLY_DATASET_URL} (DOI `{ERA5_LAND_MONTHLY_DATASET_DOI}`) and "
             f"`{ERA5_MONTHLY_DATASET_NAME}` {ERA5_MONTHLY_DATASET_URL} "
             f"(DOI `{ERA5_MONTHLY_DATASET_DOI}`), both distributed through the Climate Data Store "
             "under the CDS `CC-BY` licence.\n"
-            f"- Inspiration: {SHOW_YOUR_STRIPES_CREDIT} {SHOW_YOUR_STRIPES_URL}\n"
             f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
             f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
             f"- Underlying ERA5 reference: {ERA5_REFERENCE_CITATION}\n"

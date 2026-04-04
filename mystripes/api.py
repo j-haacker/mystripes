@@ -21,7 +21,7 @@ RollingSampleMode = Literal["monthly", "fixed_count"]
 WatermarkHorizontalAlign = Literal["left", "center", "right"]
 WatermarkVerticalAlign = Literal["bottom", "center", "top"]
 PeriodIndicatorStyle = Literal["scale_bar", "outward_arrows"]
-PeriodIndicatorVerticalAlign = Literal["bottom", "top"]
+PeriodIndicatorVerticalAlign = Literal["bottom", "center", "top"]
 
 
 def build_stripe_data(
@@ -217,6 +217,7 @@ def plot_stripes(
     period_indicator_style: PeriodIndicatorStyle = "scale_bar",
     period_indicator_vertical_align: PeriodIndicatorVerticalAlign = "bottom",
     period_indicator_color: str = "#ffffff",
+    period_indicator_height_ratio: float = 0.2,
 ) -> Figure:
     """Plot stripes from the bundle returned by `build_stripe_data`.
 
@@ -224,7 +225,9 @@ def plot_stripes(
     `watermark_text` and the other watermark arguments to overlay a fitted
     text watermark over the stripes graphic. Provide `period_indicators`
     together with the period-indicator style arguments to overlay approximate
-    period-range labels on top of the stripes.
+    period-range labels on top of the stripes. Use
+    `period_indicator_height_ratio` to scale how much of the stripe height
+    the indicator overlay should occupy.
     """
 
     stripe_frame = _extract_stripe_frame(stripe_data)
@@ -243,6 +246,7 @@ def plot_stripes(
         period_indicator_style=period_indicator_style,
         period_indicator_vertical_align=period_indicator_vertical_align,
         period_indicator_color=period_indicator_color,
+        period_indicator_height_ratio=period_indicator_height_ratio,
     )
 
     if output_path is not None:

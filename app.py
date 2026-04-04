@@ -1110,13 +1110,14 @@ def main() -> None:
     period_indicator_style = "scale_bar"
     period_indicator_vertical_align = "bottom"
     period_indicator_color = "#ffffff"
+    period_indicator_height_ratio = 0.2
     if indicated_period_indices:
         with st.expander("Period indicators", expanded=True):
             st.caption(
                 "Show approximate guides for the selected periods on top of the stripes. "
                 "Scale bars keep a tiny gap between neighboring indicators so they do not touch."
             )
-            indicator_columns = st.columns(3)
+            indicator_columns = st.columns(4)
             period_indicator_style = indicator_columns[0].selectbox(
                 "Design",
                 options=("scale_bar", "outward_arrows"),
@@ -1128,7 +1129,7 @@ def main() -> None:
             )
             period_indicator_vertical_align = indicator_columns[1].selectbox(
                 "Placement",
-                options=("bottom", "top"),
+                options=("bottom", "center", "top"),
                 format_func=lambda option: option.capitalize(),
                 key="period_indicator_vertical_align",
             )
@@ -1136,6 +1137,19 @@ def main() -> None:
                 "Indicator color",
                 value="#ffffff",
                 key="period_indicator_color",
+            )
+            period_indicator_height_ratio = (
+                indicator_columns[3].slider(
+                    "Indicator height",
+                    min_value=5,
+                    max_value=100,
+                    value=20,
+                    step=5,
+                    format="%d%%",
+                    key="period_indicator_height_percent",
+                    help="Approximate share of the stripe graphic height that the indicator overlay may use.",
+                )
+                / 100.0
             )
 
     for error in preview_errors:
@@ -1442,6 +1456,7 @@ def main() -> None:
         period_indicator_style=period_indicator_style,
         period_indicator_vertical_align=period_indicator_vertical_align,
         period_indicator_color=period_indicator_color,
+        period_indicator_height_ratio=period_indicator_height_ratio,
     )
 
     png_bytes = export_figure_bytes(figure, "png", png_dpi)

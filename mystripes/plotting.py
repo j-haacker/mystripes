@@ -31,6 +31,7 @@ STRIPES_COLORS = [
 
 _WATERMARK_PADDING_RATIO = 0.02
 _PERIOD_INDICATOR_MIN_GAP_PIXELS = 1.0
+_PERIOD_INDICATOR_PADDING_RATIO = 0.02
 
 _WATERMARK_HORIZONTAL_POSITIONS = {
     "left": (_WATERMARK_PADDING_RATIO, "left", 1 - _WATERMARK_PADDING_RATIO),
@@ -59,6 +60,7 @@ def render_stripes_figure(
     period_indicator_style: str = "scale_bar",
     period_indicator_vertical_align: str = "bottom",
     period_indicator_color: str = "#ffffff",
+    period_indicator_height_ratio: float = 0.2,
 ) -> plt.Figure:
     if not anomalies:
         raise ValueError("At least one anomaly is required to render strips.")
@@ -97,6 +99,7 @@ def render_stripes_figure(
         style=period_indicator_style,
         vertical_align=period_indicator_vertical_align,
         color=period_indicator_color,
+        height_ratio=period_indicator_height_ratio,
     )
     return figure
 
@@ -178,13 +181,16 @@ def _add_period_indicators(
     style: str,
     vertical_align: str,
     color: str,
+    height_ratio: float,
 ) -> None:
     if not indicators:
         return
     if style not in {"scale_bar", "outward_arrows"}:
         raise ValueError(f"Unsupported period indicator style: {style}")
-    if vertical_align not in {"top", "bottom"}:
+    if vertical_align not in {"top", "center", "bottom"}:
         raise ValueError(f"Unsupported period indicator vertical alignment: {vertical_align}")
+    if not 0 < height_ratio <= 1:
+        raise ValueError("The period indicator height ratio must be between 0 and 1.")
 
     normalized_indicators = []
     for indicator in indicators:
@@ -217,13 +223,15 @@ def _add_period_indicators(
 
     gap_ratio = _PERIOD_INDICATOR_MIN_GAP_PIXELS / axis_box.width
     adjusted_indicators = _apply_indicator_gap(normalized_indicators, gap_ratio)
-    line_y = 0.12 if vertical_align == "bottom" else 0.88
-    label_y = 0.03 if vertical_align == "bottom" else 0.97
-    label_vertical_align = "bottom" if vertical_align == "top" else "top"
-    line_width = max(1.0, min(2.2, axis_box.height / 140.0))
-    tick_half_height = max(0.012, min(0.04, 8.0 / axis_box.height))
-    arrow_scale = max(8.0, min(16.0, axis_box.height / 9.0))
-    base_fontsize = max(7.0, min(13.0, axis_box.height / 18.0))
+    line_y, tick_bounds, label_y, label_vertical_align, band_height_ratio = _period_indicator_layout(
+        vertical_align=vertical_align,
+        height_ratio=height_ratio,
+    )
+    band_height_pixels = axis_box.height * band_height_ratio
+    line_width = max(1.0, min(3.0, band_height_pixels / 18.0))
+    arrow_scale = max(7.0, min(22.0, band_height_pixels * 0.42))
+    base_fontsize = max(6.0, min(18.0, band_height_pixels * 0.22))
+    available_label_height_pixels = max(axis_box.height * band_height_ratio * 0.34, 8.0)
     text_artists = []
 
     for indicator in adjusted_indicators:
@@ -246,7 +254,7 @@ def _add_period_indicators(
                 axis.add_line(
                     Line2D(
                         [x_position, x_position],
-                        [line_y - tick_half_height, line_y + tick_half_height],
+                        tick_bounds,
                         transform=axis.transAxes,
                         color=color,
                         linewidth=line_width,
@@ -295,6 +303,7 @@ def _add_period_indicators(
                         ],
                     ),
                     end_fraction - start_fraction,
+                    available_label_height_pixels,
                 )
             )
 
@@ -303,17 +312,49 @@ def _add_period_indicators(
 
     figure.canvas.draw()
     renderer = figure.canvas.get_renderer()
-    for text_artist, width_fraction in text_artists:
+    for text_artist, width_fraction, max_height_pixels in text_artists:
         text_box = text_artist.get_window_extent(renderer=renderer)
         if text_box.width <= 0 or width_fraction <= 0:
             continue
         available_width_pixels = axis_box.width * width_fraction
         if available_width_pixels <= 0:
             continue
-        if text_box.width <= available_width_pixels:
+        width_scale = (available_width_pixels / text_box.width) * 0.95 if text_box.width > available_width_pixels else 1.0
+        height_scale = (max_height_pixels / text_box.height) * 0.95 if text_box.height > max_height_pixels else 1.0
+        scale = max(0.55, min(1.0, width_scale, height_scale))
+        if scale >= 1.0:
             continue
-        scale = max(0.55, min(1.0, (available_width_pixels / text_box.width) * 0.95))
         text_artist.set_fontsize(max(float(text_artist.get_fontsize()) * scale, 5.5))
+
+
+def _period_indicator_layout(
+    *,
+    vertical_align: str,
+    height_ratio: float,
+) -> tuple[float, tuple[float, float], float, str, float]:
+    band_height_ratio = min(float(height_ratio), 1 - (2 * _PERIOD_INDICATOR_PADDING_RATIO))
+    if vertical_align == "top":
+        band_top = 1 - _PERIOD_INDICATOR_PADDING_RATIO
+        band_bottom = band_top - band_height_ratio
+        line_y = band_bottom + (0.72 * band_height_ratio)
+        label_y = band_bottom + (0.24 * band_height_ratio)
+        tick_bounds = (line_y, band_bottom + (0.38 * band_height_ratio))
+        return line_y, tick_bounds, label_y, "center", band_height_ratio
+    if vertical_align == "bottom":
+        band_bottom = _PERIOD_INDICATOR_PADDING_RATIO
+        line_y = band_bottom + (0.28 * band_height_ratio)
+        label_y = band_bottom + (0.76 * band_height_ratio)
+        tick_bounds = (line_y, band_bottom + (0.62 * band_height_ratio))
+        return line_y, tick_bounds, label_y, "center", band_height_ratio
+
+    band_bottom = 0.5 - (band_height_ratio / 2.0)
+    line_y = band_bottom + (0.34 * band_height_ratio)
+    label_y = band_bottom + (0.76 * band_height_ratio)
+    tick_bounds = (
+        line_y - (0.18 * band_height_ratio),
+        line_y + (0.18 * band_height_ratio),
+    )
+    return line_y, tick_bounds, label_y, "center", band_height_ratio
 
 
 def _apply_indicator_gap(

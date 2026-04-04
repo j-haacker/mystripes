@@ -436,7 +436,8 @@ def _request_batch_label(event: dict[str, object]) -> str:
 
     month_count = int(event.get("month_count") or 0)
     if month_count:
-        parts.append(f"{month_count} months/year")
+        noun = "month" if month_count == 1 else "months"
+        parts.append(f"{month_count} {noun}")
 
     return ", ".join(parts)
 
@@ -484,6 +485,8 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
             return f"Using a saved shared {dataset_label} yearly file."
         if cache_scope == "shared_grid":
             return f"Using a saved shared {dataset_label} grid request."
+        if cache_scope == "shared_grid_window":
+            return f"Using a saved shared {dataset_label} bbox window."
         if purpose == "calibration":
             return f"Using a saved {dataset_label} calibration window."
         return f"Using a saved {dataset_label} request chunk for {range_start} to {range_end}."
@@ -492,15 +495,15 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
         if str(event.get("dataset") or "").startswith("reanalysis-era5"):
             noun = "batch" if request_count == 1 else "batches"
         else:
-            noun = "yearly request" if request_count == 1 else "yearly requests"
+            noun = "bbox request" if request_count == 1 else "bbox requests"
         if purpose == "calibration":
             return f"Preparing {request_count} {dataset_label} calibration {noun}."
         return f"Need {request_count} {dataset_label} request {noun} for this timeline segment."
     if stage == "request_started":
         batch_label = _request_batch_label(event)
         request_scope = str(event.get("request_scope") or "")
-        if request_scope == "year_subset":
-            batch_label = batch_label or "subset"
+        if request_scope == "bbox_window":
+            batch_label = batch_label or "bbox window"
         if request_origin == "local_cache":
             return (
                 f"Reading saved {dataset_label} {batch_label}."
@@ -521,8 +524,8 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     if stage == "request_finished":
         batch_label = _request_batch_label(event)
         request_scope = str(event.get("request_scope") or "")
-        if request_scope == "year_subset":
-            batch_label = batch_label or "subset"
+        if request_scope == "bbox_window":
+            batch_label = batch_label or "bbox window"
         if request_origin == "local_cache":
             return (
                 f"Finished reading saved {dataset_label} {batch_label}."

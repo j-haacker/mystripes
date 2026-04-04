@@ -77,7 +77,7 @@ class ClimateStackTests(unittest.TestCase):
             )
         )
         self.assertEqual(level, "warning")
-        self.assertIn("12 uncached 20CRv3 yearly requests", message)
+        self.assertIn("12 uncached 20CRv3 bbox downloads", message)
         self.assertIn("Later runs reuse the local cache", message)
 
     def test_estimate_climate_downloads_counts_bridge_fetches_and_twcr_years(self) -> None:
@@ -102,10 +102,16 @@ class ClimateStackTests(unittest.TestCase):
                     "shared_tasks": (
                         type("Task", (), {"source_id": "era5_bridge", "year": None})(),
                         type("Task", (), {"source_id": "era5_bridge", "year": None})(),
-                        type("Task", (), {"source_id": "20crv3", "year": 1938})(),
-                        type("Task", (), {"source_id": "20crv3", "year": 1939})(),
-                        type("Task", (), {"source_id": "20crv3", "year": 1961})(),
-                        type("Task", (), {"source_id": "20crv3", "year": 1962})(),
+                        type(
+                            "Task",
+                            (),
+                            {"source_id": "20crv3", "year": None, "start_date": date(1938, 1, 1), "end_date": date(1939, 12, 31)},
+                        )(),
+                        type(
+                            "Task",
+                            (),
+                            {"source_id": "20crv3", "year": None, "start_date": date(1961, 1, 1), "end_date": date(1962, 12, 31)},
+                        )(),
                     ),
                 },
             )(),
@@ -114,7 +120,7 @@ class ClimateStackTests(unittest.TestCase):
 
         self.assertTrue(estimate.uses_historical_fallback)
         self.assertEqual(estimate.uncached_era5_bridge_fetches, 2)
-        self.assertEqual(estimate.uncached_twcr_fetches, 4)
+        self.assertEqual(estimate.uncached_twcr_fetches, 2)
         self.assertEqual(estimate.uncached_twcr_years, (1938, 1939, 1961, 1962))
 
     def test_build_climate_batch_plan_deduplicates_shared_era5_tasks(self) -> None:
@@ -185,11 +191,52 @@ class ClimateStackTests(unittest.TestCase):
             task
             for task in batch_plan.shared_tasks
             if task.source_id == "20crv3"
-            and task.year == 1938
             and task.task_kind == "twcr_grid"
+            and task.start_date == date(1938, 1, 1)
+            and task.end_date == date(1990, 12, 31)
         ]
         self.assertEqual(len(visible_twcr_tasks), 1)
         self.assertIn(visible_twcr_tasks[0].work_id, batch_plan.location_dependencies["a"])
+        self.assertEqual(batch_plan.location_twcr_tasks["a"][0].work_id, visible_twcr_tasks[0].work_id)
+
+    def test_build_climate_batch_plan_merges_nearby_twcr_requests_into_shared_bbox(self) -> None:
+        requests = [
+            LocationClimateRequest(
+                location_key="vienna",
+                display_name="Vienna",
+                latitude=48.2082,
+                longitude=16.3738,
+                boundary_geojson=None,
+                boundary_bbox=None,
+                start_date=date(1938, 1, 1),
+                end_date=date(1938, 12, 31),
+            ),
+            LocationClimateRequest(
+                location_key="bratislava",
+                display_name="Bratislava",
+                latitude=48.1486,
+                longitude=17.1077,
+                boundary_geojson=None,
+                boundary_bbox=None,
+                start_date=date(1938, 1, 1),
+                end_date=date(1938, 12, 31),
+            ),
+        ]
+
+        with patch("mystripes.climate_stack._load_cached_temperature_series", return_value=None), patch(
+            "pathlib.Path.exists",
+            return_value=False,
+        ), patch(
+            "mystripes.climate_stack._needs_cds_window_fetch",
+            return_value=False,
+        ):
+            batch_plan = build_climate_batch_plan(requests, spatial_mode="single_cell")
+
+        twcr_tasks = [task for task in batch_plan.shared_tasks if task.source_id == "20crv3"]
+        self.assertEqual(len(twcr_tasks), 1)
+        self.assertEqual(twcr_tasks[0].area, (48.0, 16.0, 48.0, 17.0))
+        self.assertIn(twcr_tasks[0].work_id, batch_plan.location_dependencies["vienna"])
+        self.assertIn(twcr_tasks[0].work_id, batch_plan.location_dependencies["bratislava"])
 
     def test_fetch_saved_climate_series_batch_reports_shared_and_location_progress(self) -> None:
         request = LocationClimateRequest(
@@ -265,7 +312,7 @@ class ClimateStackTests(unittest.TestCase):
             with log_lock:
                 execution_log.append(f"shared_finish:{task.work_id}")
 
-        def fake_run_location_task(config, request, spatial_mode, radius_km, progress_callback):
+        def fake_run_location_task(config, request, spatial_mode, radius_km, twcr_request_tasks, progress_callback):
             with log_lock:
                 execution_log.append(f"location_start:{request.location_key}")
             return frame
@@ -384,20 +431,22 @@ class ClimateStackTests(unittest.TestCase):
         self.assertEqual(combined["temperature_c"].round(2).tolist(), [7.0, 8.0])
 
     def test_fetch_saved_climate_series_calibrates_twcr_slice(self) -> None:
-        visible_frame = _monthly_frame("1938-01-01", 2, [4.0, 5.0])
+        combined_twcr_frame = pd.concat(
+            [
+                _monthly_frame("1938-01-01", 2, [4.0, 5.0]),
+                _monthly_frame("1961-01-01", 2, [9.0, 10.0]),
+            ],
+            ignore_index=True,
+        )
         anchor_frame = _monthly_frame("1961-01-01", 2, [12.0, 13.0])
-        source_calibration_frame = _monthly_frame("1961-01-01", 2, [9.0, 10.0])
 
         with patch(
             "mystripes.climate_stack.fetch_saved_twcr_temperature_series",
-            return_value=visible_frame,
-        ), patch(
-            "mystripes.climate_stack.fetch_twcr_temperature_series",
-            return_value=source_calibration_frame,
+            return_value=combined_twcr_frame,
         ), patch(
             "mystripes.climate_stack.fetch_point_temperature_series",
             return_value=anchor_frame,
-        ):
+        ) as fetch_point_temperature_series_mock:
             combined = fetch_saved_climate_series(
                 config=CDSConfig(url="https://example.invalid/api", key="secret"),
                 latitude=48.2,
@@ -407,18 +456,21 @@ class ClimateStackTests(unittest.TestCase):
             )
 
         self.assertEqual(combined["temperature_c"].round(2).tolist(), [7.0, 8.0])
+        self.assertEqual(fetch_point_temperature_series_mock.call_count, 1)
 
     def test_fetch_saved_climate_series_falls_back_to_scale_one_when_variance_is_missing(self) -> None:
-        visible_frame = _monthly_frame("1938-01-01", 1, [4.0])
+        combined_twcr_frame = pd.concat(
+            [
+                _monthly_frame("1938-01-01", 1, [4.0]),
+                _monthly_frame("1961-01-01", 1, [9.0]),
+            ],
+            ignore_index=True,
+        )
         anchor_frame = _monthly_frame("1961-01-01", 1, [12.0])
-        source_calibration_frame = _monthly_frame("1961-01-01", 1, [9.0])
 
         with patch(
             "mystripes.climate_stack.fetch_saved_twcr_temperature_series",
-            return_value=visible_frame,
-        ), patch(
-            "mystripes.climate_stack.fetch_twcr_temperature_series",
-            return_value=source_calibration_frame,
+            return_value=combined_twcr_frame,
         ), patch(
             "mystripes.climate_stack.fetch_point_temperature_series",
             return_value=anchor_frame,

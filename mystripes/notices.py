@@ -4,6 +4,14 @@ ERA5_LAND_MONTHLY_DATASET_NAME = "ERA5-Land monthly averaged reanalysis"
 ERA5_LAND_MONTHLY_DATASET_URL = (
     "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means"
 )
+ERA5_MONTHLY_DATASET_NAME = "ERA5 monthly averaged data on single levels"
+ERA5_MONTHLY_DATASET_URL = (
+    "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means"
+)
+TWCR_MONTHLY_DATASET_NAME = "NOAA 20CRv3 monthly 2 m air temperature"
+TWCR_MONTHLY_DATASET_URL = (
+    "https://psl.noaa.gov/thredds/catalog/Datasets/20thC_ReanV3/Monthlies/2mSI-MO/catalog.html"
+)
 SHOW_YOUR_STRIPES_URL = "https://showyourstripes.info/"
 SHOW_YOUR_STRIPES_CREDIT = (
     "Inspired by the #ShowYourStripes project created by Professor Ed Hawkins and "

@@ -1106,15 +1106,6 @@ def main() -> None:
 
     _render_credit_and_license_panel(today.year)
 
-    st.session_state.period_entries = _current_storyline_period_entries()
-    periods_preview, preview_errors = build_periods_from_entries(
-        entries=st.session_state.period_entries,
-        birth_date=birth_date,
-        analysis_end=analysis_end,
-        analysis_min_start=dataset_window.min_start,
-    )
-    debug_period_aliases = _build_debug_period_aliases(periods_preview)
-    debug_period_identifications = _build_debug_period_identifications(periods_preview)
     if birth_date < dataset_window.min_start:
         st.caption(
             f"The currently supported climate-data stack begins on {dataset_window.min_start.isoformat()}, "
@@ -1281,6 +1272,16 @@ def main() -> None:
                 )
                 / 100.0
             )
+
+    st.session_state.period_entries = _current_storyline_period_entries()
+    periods_preview, preview_errors = build_periods_from_entries(
+        entries=st.session_state.period_entries,
+        birth_date=birth_date,
+        analysis_end=analysis_end,
+        analysis_min_start=dataset_window.min_start,
+    )
+    debug_period_aliases = _build_debug_period_aliases(periods_preview)
+    debug_period_identifications = _build_debug_period_identifications(periods_preview)
 
     for error in preview_errors:
         st.error(error)

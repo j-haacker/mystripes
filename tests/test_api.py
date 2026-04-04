@@ -241,9 +241,13 @@ class PublicAPITests(unittest.TestCase):
         self.assertEqual(len(axis.lines), 0)
         self.assertEqual(len(axis.patches), 4)
         self.assertEqual(type(axis.patches[0]).__name__, "FancyArrow")
-        self.assertAlmostEqual(float(axis.patches[0]._head_length), 0.036, places=6)
-        self.assertAlmostEqual(float(axis.patches[0]._head_width), 0.048, places=6)
+        self.assertAlmostEqual(float(axis.patches[0]._head_length), 0.008, places=6)
+        self.assertAlmostEqual(float(axis.patches[0]._head_width), 0.08, places=6)
         self.assertAlmostEqual(float(axis.patches[0]._width), 0.016, places=6)
+        self.assertAlmostEqual(float(axis.patches[0]._head_width) / float(axis.patches[0]._width), 5.0, places=6)
+        self.assertAlmostEqual(float(axis.patches[0]._head_length) / float(axis.patches[0]._head_width), 0.1, places=6)
+        self.assertEqual(to_hex(axis.patches[0].get_edgecolor(), keep_alpha=False), "#000000")
+        self.assertAlmostEqual(float(axis.patches[0].get_linewidth()), 0.466667, places=5)
         figure.clf()
 
     def test_plot_stripes_supports_centered_period_indicators_and_height_scaling(self) -> None:

@@ -230,8 +230,9 @@ def _add_period_indicators(
     line_width = max(1.0, min(3.0, band_height_pixels / 18.0))
     tick_half_width_ratio = ((line_width * figure.dpi) / 72.0) / (2.0 * axis_box.width)
     arrow_tail_width = max(0.004, min(0.018, band_height_ratio * 0.08))
-    arrow_head_width = max(arrow_tail_width * 2.5, min(0.08, band_height_ratio * 0.24))
-    arrow_head_length = max(0.01, min(0.04, band_height_ratio * 0.18))
+    arrow_head_width = arrow_tail_width * 5
+    arrow_head_length = arrow_head_width * band_height_ratio / 2
+    arrow_edge_width = max(0.3, min(0.9, line_width * 0.35))
     base_fontsize = max(6.0, min(18.0, band_height_pixels * 0.22))
     available_label_height_pixels = max(axis_box.height * band_height_ratio * 0.34, 8.0)
     text_artists = []
@@ -288,8 +289,9 @@ def _add_period_indicators(
                     head_width=arrow_head_width,
                     head_length=arrow_head_length,
                     length_includes_head=True,
-                    linewidth=0.0,
-                    color=color,
+                    linewidth=arrow_edge_width,
+                    facecolor=color,
+                    edgecolor="black",
                     alpha=0.92,
                     zorder=4,
                     clip_on=True,

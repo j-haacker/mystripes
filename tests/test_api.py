@@ -202,6 +202,8 @@ class PublicAPITests(unittest.TestCase):
         axis = figure.axes[0]
         self.assertEqual([text.get_text() for text in axis.texts], ["Home", "Abroad"])
         self.assertGreaterEqual(len(axis.lines), 6)
+        self.assertGreater(float(axis.lines[1].get_xdata()[0]), float(axis.lines[0].get_xdata()[0]))
+        self.assertLess(float(axis.lines[2].get_xdata()[0]), float(axis.lines[0].get_xdata()[1]))
         self.assertEqual(len(axis.patches), 0)
         figure.clf()
 

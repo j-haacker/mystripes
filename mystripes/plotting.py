@@ -229,6 +229,7 @@ def _add_period_indicators(
     )
     band_height_pixels = axis_box.height * band_height_ratio
     line_width = max(1.0, min(3.0, band_height_pixels / 18.0))
+    tick_half_width_ratio = ((line_width * figure.dpi) / 72.0) / (2.0 * axis_box.width)
     arrow_scale = max(7.0, min(22.0, band_height_pixels * 0.42))
     base_fontsize = max(6.0, min(18.0, band_height_pixels * 0.22))
     available_label_height_pixels = max(axis_box.height * band_height_ratio * 0.34, 8.0)
@@ -250,7 +251,11 @@ def _add_period_indicators(
                     zorder=4,
                 )
             )
-            for x_position in (start_fraction, end_fraction):
+            tick_positions = (
+                min(start_fraction + tick_half_width_ratio, (start_fraction + end_fraction) / 2.0),
+                max(end_fraction - tick_half_width_ratio, (start_fraction + end_fraction) / 2.0),
+            )
+            for x_position in tick_positions:
                 axis.add_line(
                     Line2D(
                         [x_position, x_position],

@@ -15,6 +15,7 @@ from mystripes.cds import (
     _aggregate_spatial_selection,
     _dataset_window_from_constraints,
     _request_area,
+    _resolve_temperature_variable_name,
     fetch_point_temperature_series,
     fetch_saved_temperature_series,
     parse_temperature_file,
@@ -70,6 +71,18 @@ class MonthlyCDSTests(unittest.TestCase):
         )
 
         self.assertEqual(area, (48.25, 16.25, 48.25, 16.25))
+
+    def test_resolve_temperature_variable_name_accepts_twcr_air_variable(self) -> None:
+        dataset = SimpleNamespace(
+            variables={
+                "time": object(),
+                "lat": object(),
+                "lon": object(),
+                "air": SimpleNamespace(units="K", dimensions=("time", "lat", "lon")),
+            }
+        )
+
+        self.assertEqual(_resolve_temperature_variable_name(dataset), "air")
 
     def test_radius_aggregation_averages_cells_inside_radius(self) -> None:
         timestamp = pd.Timestamp("2020-01-01T00:00:00Z")

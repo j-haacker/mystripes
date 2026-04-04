@@ -779,7 +779,7 @@ def _next_month(current: date) -> date:
 
 
 def _resolve_temperature_variable_name(dataset) -> str:
-    candidates = ("2m_temperature", "t2m", "temperature", "value")
+    candidates = ("2m_temperature", "t2m", "temperature", "air", "value")
     for name in candidates:
         if name in dataset.variables:
             return name
@@ -792,7 +792,7 @@ def _resolve_temperature_variable_name(dataset) -> str:
         if units.upper().startswith("K") and getattr(variable, "dimensions", ()):
             return name
 
-    raise CDSRequestError("Could not identify the temperature variable in the CDS NetCDF file.")
+    raise CDSRequestError("Could not identify the temperature variable in the climate-data NetCDF file.")
 
 
 def _find_first_name(mapping: Mapping[str, Any], candidates: tuple[str, ...]) -> str | None:

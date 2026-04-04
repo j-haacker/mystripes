@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
-from matplotlib.patches import ArrowStyle, FancyArrowPatch
 
 STRIPES_COLORS = [
     "#08306b",
@@ -32,7 +31,6 @@ STRIPES_COLORS = [
 _WATERMARK_PADDING_RATIO = 0.02
 _PERIOD_INDICATOR_MIN_GAP_PIXELS = 1.0
 _PERIOD_INDICATOR_PADDING_RATIO = 0.02
-_OUTWARD_ARROW_STYLE = ArrowStyle.Simple(head_length=0.8, head_width=0.24, tail_width=0.08)
 
 _WATERMARK_HORIZONTAL_POSITIONS = {
     "left": (_WATERMARK_PADDING_RATIO, "left", 1 - _WATERMARK_PADDING_RATIO),
@@ -231,7 +229,9 @@ def _add_period_indicators(
     band_height_pixels = axis_box.height * band_height_ratio
     line_width = max(1.0, min(3.0, band_height_pixels / 18.0))
     tick_half_width_ratio = ((line_width * figure.dpi) / 72.0) / (2.0 * axis_box.width)
-    arrow_scale = max(7.0, min(22.0, band_height_pixels * 0.42))
+    arrow_tail_width = max(0.004, min(0.018, band_height_ratio * 0.08))
+    arrow_head_width = max(arrow_tail_width * 2.5, min(0.08, band_height_ratio * 0.24))
+    arrow_head_length = max(0.01, min(0.04, band_height_ratio * 0.18))
     base_fontsize = max(6.0, min(18.0, band_height_pixels * 0.22))
     available_label_height_pixels = max(axis_box.height * band_height_ratio * 0.34, 8.0)
     text_artists = []
@@ -279,21 +279,21 @@ def _add_period_indicators(
         else:
             midpoint_fraction = (start_fraction + end_fraction) / 2.0
             for end_position in (start_fraction, end_fraction):
-                axis.add_patch(
-                    FancyArrowPatch(
-                        (midpoint_fraction, line_y),
-                        (end_position, line_y),
-                        transform=axis.transAxes,
-                        arrowstyle=_OUTWARD_ARROW_STYLE,
-                        mutation_scale=arrow_scale,
-                        linewidth=line_width,
-                        color=color,
-                        alpha=0.92,
-                        zorder=4,
-                        clip_on=True,
-                        shrinkA=0,
-                        shrinkB=0,
-                    )
+                axis.arrow(
+                    midpoint_fraction,
+                    line_y,
+                    end_position - midpoint_fraction,
+                    0.0,
+                    width=arrow_tail_width,
+                    head_width=arrow_head_width,
+                    head_length=arrow_head_length,
+                    length_includes_head=True,
+                    linewidth=0.0,
+                    color=color,
+                    alpha=0.92,
+                    zorder=4,
+                    clip_on=True,
+                    transform=axis.transAxes,
                 )
 
         label = str(indicator["label"])

@@ -1960,13 +1960,14 @@ def _render_credit_and_license_panel(current_year: int) -> None:
 
 
 def _render_time_series_summary_note() -> None:
-    st.caption(
-        "Time-series summary: MyStripes loads monthly near-surface air temperatures for each place, "
-        "using ERA5-Land from 1950 onward, ERA5 for 1940-1949, and 20CRv3 before 1940 when needed. "
-        "Historical slices are anomaly-aligned to ERA5-Land, monthly values are expanded to daily "
-        "values within each period, merged along the active period schedule, and then compared with "
-        "the selected reference period to compute the climatology and anomalies behind the stripes."
-    )
+    with st.expander("How it works", expanded=False):
+        st.caption(
+            "MyStripes loads monthly near-surface air temperatures for each place, "
+            "using ERA5-Land from 1950 onward, ERA5 for 1940-1949, and 20CRv3 before 1940 when needed. "
+            "Historical slices are anomaly-aligned to ERA5-Land, monthly values are expanded to daily "
+            "values within each period, merged along the active period schedule, and then compared with "
+            "the selected reference period to compute the climatology and anomalies behind the stripes."
+        )
 
 
 def _add_period_entry(analysis_end: date) -> None:

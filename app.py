@@ -1345,8 +1345,9 @@ def main() -> None:
         fetch_window_end = max(effective_report_end, reference_end)
         location_requests = build_location_climate_requests(
             periods_preview,
-            fetch_start=fetch_window_start,
-            fetch_end=fetch_window_end,
+            reference_start=reference_start,
+            reference_end=reference_end,
+            first_period_history_days=first_period_history_days,
         )
         historical_note = climate_stack_note(fetch_window_start, fetch_window_end)
         historical_download_estimate = estimate_climate_downloads(

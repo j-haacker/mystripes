@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from queue import Empty, Queue
 from typing import Any
 
@@ -172,11 +172,31 @@ def build_climate_source_slices(start_date: date, end_date: date) -> list[Climat
 def build_location_climate_requests(
     periods: Sequence[LifePeriod],
     *,
-    fetch_start: date,
-    fetch_end: date,
+    reference_start: date,
+    reference_end: date,
+    first_period_history_days: int = 0,
 ) -> list[LocationClimateRequest]:
     requests_by_location: dict[str, LocationClimateRequest] = {}
+    if not periods:
+        return []
+
+    first_period = periods[0]
+    active_ranges_by_location: dict[str, tuple[date, date]] = {}
     for period in periods:
+        current_range = active_ranges_by_location.get(period.location_key)
+        current_start = period.start_date
+        if period.location_key == first_period.location_key and period.start_date == first_period.start_date:
+            current_start = period.start_date - timedelta(days=first_period_history_days)
+        if current_range is None:
+            active_ranges_by_location[period.location_key] = (current_start, period.end_date)
+            continue
+        active_ranges_by_location[period.location_key] = (
+            min(current_range[0], current_start),
+            max(current_range[1], period.end_date),
+        )
+
+    for period in periods:
+        active_start, active_end = active_ranges_by_location[period.location_key]
         requests_by_location.setdefault(
             period.location_key,
             LocationClimateRequest(
@@ -186,8 +206,8 @@ def build_location_climate_requests(
                 longitude=period.longitude,
                 boundary_geojson=period.boundary_geojson,
                 boundary_bbox=period.bounding_box,
-                start_date=fetch_start,
-                end_date=fetch_end,
+                start_date=min(active_start, reference_start),
+                end_date=max(active_end, reference_end),
             ),
         )
     return list(requests_by_location.values())
@@ -258,6 +278,7 @@ def build_climate_batch_plan(
             dataset=ERA5_MONTHLY_DATASET,
         )
         source_slices = build_climate_source_slices(request.start_date, request.end_date)
+        land_slice_covers_baseline = _source_slices_include_anchor_land_baseline(source_slices)
         for source_slice in source_slices:
             if source_slice.source_id == "era5_land":
                 _add_missing_cds_timeline_tasks(
@@ -280,37 +301,25 @@ def build_climate_batch_plan(
                     request=request,
                     dataset=ERA5_MONTHLY_DATASET,
                     area=request_area_era5,
-                    start_date=source_slice.start_date,
-                    end_date=source_slice.end_date,
+                    start_date=min(source_slice.start_date, CALIBRATION_BASELINE_START),
+                    end_date=max(source_slice.end_date, CALIBRATION_BASELINE_END),
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
                 )
-                _add_missing_cds_window_task(
-                    shared_tasks,
-                    location_dependencies=request_dependencies,
-                    request=request,
-                    dataset=ERA5_MONTHLY_DATASET,
-                    area=request_area_era5,
-                    start_date=CALIBRATION_BASELINE_START,
-                    end_date=CALIBRATION_BASELINE_END,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    source_id="era5_bridge",
-                    label=ERA5_MONTHLY_DATASET.display_name,
-                )
-                _add_missing_cds_window_task(
-                    shared_tasks,
-                    location_dependencies=request_dependencies,
-                    request=request,
-                    dataset=ERA5_LAND_MONTHLY_DATASET,
-                    area=request_area_era5_land,
-                    start_date=CALIBRATION_BASELINE_START,
-                    end_date=CALIBRATION_BASELINE_END,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    source_id="era5_land",
-                    label=ERA5_LAND_MONTHLY_DATASET.display_name,
-                )
+                if not land_slice_covers_baseline:
+                    _add_missing_cds_window_task(
+                        shared_tasks,
+                        location_dependencies=request_dependencies,
+                        request=request,
+                        dataset=ERA5_LAND_MONTHLY_DATASET,
+                        area=request_area_era5_land,
+                        start_date=CALIBRATION_BASELINE_START,
+                        end_date=CALIBRATION_BASELINE_END,
+                        spatial_mode=spatial_mode,
+                        radius_km=radius_km,
+                        source_id="era5_land",
+                        label=ERA5_LAND_MONTHLY_DATASET.display_name,
+                    )
                 continue
 
             if source_slice.source_id == TWCR_SOURCE_ID:
@@ -322,19 +331,20 @@ def build_climate_batch_plan(
                     spatial_mode=spatial_mode,
                     radius_km=radius_km,
                 )
-                _add_missing_cds_window_task(
-                    shared_tasks,
-                    location_dependencies=request_dependencies,
-                    request=request,
-                    dataset=ERA5_LAND_MONTHLY_DATASET,
-                    area=request_area_era5_land,
-                    start_date=CALIBRATION_BASELINE_START,
-                    end_date=CALIBRATION_BASELINE_END,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    source_id="era5_land",
-                    label=ERA5_LAND_MONTHLY_DATASET.display_name,
-                )
+                if not land_slice_covers_baseline:
+                    _add_missing_cds_window_task(
+                        shared_tasks,
+                        location_dependencies=request_dependencies,
+                        request=request,
+                        dataset=ERA5_LAND_MONTHLY_DATASET,
+                        area=request_area_era5_land,
+                        start_date=CALIBRATION_BASELINE_START,
+                        end_date=CALIBRATION_BASELINE_END,
+                        spatial_mode=spatial_mode,
+                        radius_km=radius_km,
+                        source_id="era5_land",
+                        label=ERA5_LAND_MONTHLY_DATASET.display_name,
+                    )
 
     location_twcr_tasks = _register_twcr_shared_tasks(
         shared_tasks,
@@ -627,6 +637,28 @@ def _task_years(task: SharedClimateTask) -> tuple[int, ...]:
     return tuple(range(task.start_date.year, task.end_date.year + 1))
 
 
+def _source_slices_include_anchor_land_baseline(source_slices: Sequence[ClimateSourceSlice]) -> bool:
+    return any(
+        source_slice.source_id == "era5_land"
+        and source_slice.start_date <= CALIBRATION_BASELINE_START
+        and source_slice.end_date >= CALIBRATION_BASELINE_END
+        for source_slice in source_slices
+    )
+
+
+def _anchor_land_source_slice(
+    source_slices: Sequence[ClimateSourceSlice],
+) -> ClimateSourceSlice | None:
+    for source_slice in source_slices:
+        if (
+            source_slice.source_id == "era5_land"
+            and source_slice.start_date <= CALIBRATION_BASELINE_START
+            and source_slice.end_date >= CALIBRATION_BASELINE_END
+        ):
+            return source_slice
+    return None
+
+
 def _add_missing_cds_timeline_tasks(
     shared_tasks: dict[str, SharedClimateTask],
     *,
@@ -907,9 +939,55 @@ def fetch_saved_climate_series(
     if not source_slices:
         raise ValueError("No climate-data source covers the requested period.")
 
+    anchor_land_source_slice = _anchor_land_source_slice(source_slices)
     anchor_calibration_frame: pd.DataFrame | None = None
     source_calibration_frames: dict[str, pd.DataFrame] = {}
+    source_frames: dict[str, pd.DataFrame] = {}
     frames: list[pd.DataFrame] = []
+
+    def _get_anchor_land_frame(current_source_slice: ClimateSourceSlice) -> pd.DataFrame | None:
+        if anchor_land_source_slice is None:
+            return None
+        if "era5_land" in source_frames:
+            return source_frames["era5_land"]
+        source_frames["era5_land"] = fetch_saved_temperature_series(
+            config=config,
+            latitude=latitude,
+            longitude=longitude,
+            start_date=anchor_land_source_slice.start_date,
+            end_date=anchor_land_source_slice.end_date,
+            dataset=ERA5_LAND_MONTHLY_DATASET,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+            progress_callback=_forward_source_progress(progress_callback, current_source_slice),
+        )
+        return source_frames["era5_land"]
+
+    def _ensure_anchor_calibration_frame(current_source_slice: ClimateSourceSlice) -> pd.DataFrame:
+        nonlocal anchor_calibration_frame
+        if anchor_calibration_frame is not None:
+            return anchor_calibration_frame
+        anchor_land_frame = _get_anchor_land_frame(current_source_slice)
+        if anchor_land_frame is not None:
+            anchor_calibration_frame = _slice_temperature_series(
+                anchor_land_frame,
+                start_date=CALIBRATION_BASELINE_START,
+                end_date=CALIBRATION_BASELINE_END,
+            )
+            return anchor_calibration_frame
+        anchor_calibration_frame = _fetch_anchor_calibration_frame(
+            config=config,
+            latitude=latitude,
+            longitude=longitude,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            boundary_geojson=boundary_geojson,
+            boundary_bbox=boundary_bbox,
+            progress_callback=_forward_calibration_progress(progress_callback, current_source_slice),
+        )
+        return anchor_calibration_frame
 
     for source_slice in source_slices:
         _emit_progress(
@@ -922,26 +1000,35 @@ def fetch_saved_climate_series(
         )
 
         if source_slice.source_id == "era5_land":
-            frame = fetch_saved_temperature_series(
-                config=config,
-                latitude=latitude,
-                longitude=longitude,
-                start_date=source_slice.start_date,
-                end_date=source_slice.end_date,
-                dataset=ERA5_LAND_MONTHLY_DATASET,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=boundary_geojson,
-                boundary_bbox=boundary_bbox,
-                progress_callback=_forward_source_progress(progress_callback, source_slice),
-            )
+            frame = source_frames.get("era5_land")
+            if frame is None:
+                frame = fetch_saved_temperature_series(
+                    config=config,
+                    latitude=latitude,
+                    longitude=longitude,
+                    start_date=source_slice.start_date,
+                    end_date=source_slice.end_date,
+                    dataset=ERA5_LAND_MONTHLY_DATASET,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    boundary_geojson=boundary_geojson,
+                    boundary_bbox=boundary_bbox,
+                    progress_callback=_forward_source_progress(progress_callback, source_slice),
+                )
+                source_frames["era5_land"] = frame
+            if anchor_calibration_frame is None and anchor_land_source_slice == source_slice:
+                anchor_calibration_frame = _slice_temperature_series(
+                    frame,
+                    start_date=CALIBRATION_BASELINE_START,
+                    end_date=CALIBRATION_BASELINE_END,
+                )
         elif source_slice.source_id == "era5_bridge":
-            raw_frame = fetch_saved_temperature_series(
+            combined_era5_bridge_frame = fetch_saved_temperature_series(
                 config=config,
                 latitude=latitude,
                 longitude=longitude,
-                start_date=source_slice.start_date,
-                end_date=source_slice.end_date,
+                start_date=min(source_slice.start_date, CALIBRATION_BASELINE_START),
+                end_date=max(source_slice.end_date, CALIBRATION_BASELINE_END),
                 dataset=ERA5_MONTHLY_DATASET,
                 spatial_mode=spatial_mode,
                 radius_km=radius_km,
@@ -949,37 +1036,22 @@ def fetch_saved_climate_series(
                 boundary_bbox=boundary_bbox,
                 progress_callback=_forward_source_progress(progress_callback, source_slice),
             )
-            if anchor_calibration_frame is None:
-                anchor_calibration_frame = _fetch_anchor_calibration_frame(
-                    config=config,
-                    latitude=latitude,
-                    longitude=longitude,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=boundary_geojson,
-                    boundary_bbox=boundary_bbox,
-                    progress_callback=_forward_calibration_progress(progress_callback, source_slice),
-                )
+            raw_frame = _slice_temperature_series(
+                combined_era5_bridge_frame,
+                start_date=source_slice.start_date,
+                end_date=source_slice.end_date,
+            )
             source_calibration_frames.setdefault(
                 source_slice.source_id,
-                fetch_point_temperature_series(
-                    config=config,
-                    latitude=latitude,
-                    longitude=longitude,
+                _slice_temperature_series(
+                    combined_era5_bridge_frame,
                     start_date=CALIBRATION_BASELINE_START,
                     end_date=CALIBRATION_BASELINE_END,
-                    dataset=ERA5_MONTHLY_DATASET,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=boundary_geojson,
-                    boundary_bbox=boundary_bbox,
-                    cache_dir=TEMPERATURE_REQUEST_CACHE_DIR,
-                    progress_callback=_forward_calibration_progress(progress_callback, source_slice),
                 ),
             )
             frame = _calibrate_source_monthly_frame(
                 raw_frame,
-                anchor_calibration_frame=anchor_calibration_frame,
+                anchor_calibration_frame=_ensure_anchor_calibration_frame(source_slice),
                 source_calibration_frame=source_calibration_frames[source_slice.source_id],
             )
         elif source_slice.source_id == TWCR_SOURCE_ID:
@@ -1008,17 +1080,6 @@ def fetch_saved_climate_series(
                 start_date=source_slice.start_date,
                 end_date=source_slice.end_date,
             )
-            if anchor_calibration_frame is None:
-                anchor_calibration_frame = _fetch_anchor_calibration_frame(
-                    config=config,
-                    latitude=latitude,
-                    longitude=longitude,
-                    spatial_mode=spatial_mode,
-                    radius_km=radius_km,
-                    boundary_geojson=boundary_geojson,
-                    boundary_bbox=boundary_bbox,
-                    progress_callback=_forward_calibration_progress(progress_callback, source_slice),
-                )
             source_calibration_frames.setdefault(
                 source_slice.source_id,
                 _slice_temperature_series(
@@ -1029,7 +1090,7 @@ def fetch_saved_climate_series(
             )
             frame = _calibrate_source_monthly_frame(
                 raw_frame,
-                anchor_calibration_frame=anchor_calibration_frame,
+                anchor_calibration_frame=_ensure_anchor_calibration_frame(source_slice),
                 source_calibration_frame=source_calibration_frames[source_slice.source_id],
             )
         else:  # pragma: no cover - defensive guard.

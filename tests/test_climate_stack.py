@@ -16,6 +16,7 @@ from mystripes.climate_stack import (
     ClimateDownloadEstimate,
     LocationClimateRequest,
     build_climate_batch_plan,
+    build_location_climate_requests,
     build_climate_source_slices,
     climate_stack_note,
     estimate_climate_downloads,
@@ -38,6 +39,48 @@ def _monthly_frame(start: str, periods: int, values: list[float]) -> pd.DataFram
 
 
 class ClimateStackTests(unittest.TestCase):
+    def test_build_location_climate_requests_limits_each_location_to_needed_window(self) -> None:
+        periods = [
+            type(
+                "Period",
+                (),
+                {
+                    "location_key": "a",
+                    "display_name": "A",
+                    "latitude": 48.2,
+                    "longitude": 16.4,
+                    "boundary_geojson": None,
+                    "bounding_box": None,
+                    "start_date": date(1945, 12, 20),
+                    "end_date": date(2004, 5, 31),
+                },
+            )(),
+            type(
+                "Period",
+                (),
+                {
+                    "location_key": "b",
+                    "display_name": "B",
+                    "latitude": 52.5,
+                    "longitude": 13.4,
+                    "boundary_geojson": None,
+                    "bounding_box": None,
+                    "start_date": date(2004, 6, 1),
+                    "end_date": date(2010, 8, 31),
+                },
+            )(),
+        ]
+
+        requests = build_location_climate_requests(
+            periods,
+            reference_start=date(1961, 1, 1),
+            reference_end=date(2010, 12, 31),
+        )
+
+        by_location = {request.location_key: request for request in requests}
+        self.assertEqual((by_location["a"].start_date, by_location["a"].end_date), (date(1945, 12, 20), date(2010, 12, 31)))
+        self.assertEqual((by_location["b"].start_date, by_location["b"].end_date), (date(1961, 1, 1), date(2010, 12, 31)))
+
     def test_get_climate_dataset_window_extends_to_pre_era5_start(self) -> None:
         with patch(
             "mystripes.climate_stack.get_dataset_window",
@@ -160,9 +203,37 @@ class ClimateStackTests(unittest.TestCase):
         visible_tasks = [
             task
             for task in era5_bridge_tasks
-            if task.start_date == date(1944, 1, 1) and task.end_date == date(1944, 12, 31)
+            if task.start_date == date(1944, 1, 1) and task.end_date == date(1990, 12, 31)
         ]
         self.assertEqual(len(visible_tasks), 1)
+
+    def test_build_climate_batch_plan_uses_two_cds_tasks_for_pre1950_modern_request(self) -> None:
+        request = LocationClimateRequest(
+            location_key="a",
+            display_name="A",
+            latitude=48.2082,
+            longitude=16.3738,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            start_date=date(1945, 12, 20),
+            end_date=date(2025, 12, 31),
+        )
+
+        with patch("mystripes.climate_stack._load_cached_temperature_series", return_value=None), patch(
+            "pathlib.Path.exists",
+            return_value=False,
+        ), patch(
+            "mystripes.climate_stack._needs_cds_window_fetch",
+            return_value=False,
+        ):
+            batch_plan = build_climate_batch_plan([request], spatial_mode="radius", radius_km=25.0)
+
+        era5_bridge_tasks = [task for task in batch_plan.shared_tasks if task.source_id == "era5_bridge"]
+        era5_land_tasks = [task for task in batch_plan.shared_tasks if task.source_id == "era5_land"]
+        self.assertEqual(len(era5_bridge_tasks), 1)
+        self.assertEqual((era5_bridge_tasks[0].start_date, era5_bridge_tasks[0].end_date), (date(1945, 12, 20), date(1990, 12, 31)))
+        self.assertEqual(len(era5_land_tasks), 1)
+        self.assertEqual((era5_land_tasks[0].start_date, era5_land_tasks[0].end_date), (date(1950, 1, 1), date(2025, 12, 31)))
 
     def test_build_climate_batch_plan_uses_twcr_subset_tasks_for_small_requests(self) -> None:
         requests = [
@@ -395,31 +466,28 @@ class ClimateStackTests(unittest.TestCase):
         self.assertEqual(dataset.name, ERA5_LAND_MONTHLY_DATASET.name)
 
     def test_fetch_saved_climate_series_calibrates_era5_bridge_slice(self) -> None:
-        visible_frame = _monthly_frame("1944-01-01", 2, [5.0, 6.0])
+        combined_bridge_frame = pd.concat(
+            [
+                _monthly_frame("1944-01-01", 2, [5.0, 6.0]),
+                _monthly_frame("1961-01-01", 2, [10.0, 11.0]),
+            ],
+            ignore_index=True,
+        )
         anchor_frame = _monthly_frame("1961-01-01", 2, [12.0, 13.0])
-        source_calibration_frame = _monthly_frame("1961-01-01", 2, [10.0, 11.0])
 
         def fake_fetch_saved_temperature_series(**kwargs):
             dataset = kwargs["dataset"]
             if dataset.name == ERA5_MONTHLY_DATASET.name:
-                return visible_frame
+                return combined_bridge_frame
             raise AssertionError(f"Unexpected saved fetch dataset: {dataset.name}")
-
-        def fake_fetch_point_temperature_series(**kwargs):
-            dataset = kwargs["dataset"]
-            if dataset.name == ERA5_LAND_MONTHLY_DATASET.name:
-                return anchor_frame
-            if dataset.name == ERA5_MONTHLY_DATASET.name:
-                return source_calibration_frame
-            raise AssertionError(f"Unexpected point fetch dataset: {dataset.name}")
 
         with patch(
             "mystripes.climate_stack.fetch_saved_temperature_series",
             side_effect=fake_fetch_saved_temperature_series,
         ), patch(
             "mystripes.climate_stack.fetch_point_temperature_series",
-            side_effect=fake_fetch_point_temperature_series,
-        ):
+            return_value=anchor_frame,
+        ) as fetch_point_temperature_series_mock:
             combined = fetch_saved_climate_series(
                 config=CDSConfig(url="https://example.invalid/api", key="secret"),
                 latitude=48.2,
@@ -429,6 +497,49 @@ class ClimateStackTests(unittest.TestCase):
             )
 
         self.assertEqual(combined["temperature_c"].round(2).tolist(), [7.0, 8.0])
+        self.assertEqual(fetch_point_temperature_series_mock.call_count, 1)
+
+    def test_fetch_saved_climate_series_reuses_land_timeline_for_anchor_when_available(self) -> None:
+        bridge_frame = pd.concat(
+            [
+                _monthly_frame("1944-01-01", 1, [5.0]),
+                _monthly_frame("1961-01-01", 1, [10.0]),
+            ],
+            ignore_index=True,
+        )
+        land_frame = pd.concat(
+            [
+                _monthly_frame("1950-01-01", 1, [20.0]),
+                _monthly_frame("1961-01-01", 1, [12.0]),
+            ],
+            ignore_index=True,
+        )
+
+        def fake_fetch_saved_temperature_series(**kwargs):
+            dataset = kwargs["dataset"]
+            if dataset.name == ERA5_MONTHLY_DATASET.name:
+                return bridge_frame
+            if dataset.name == ERA5_LAND_MONTHLY_DATASET.name:
+                return land_frame
+            raise AssertionError(f"Unexpected saved fetch dataset: {dataset.name}")
+
+        with patch(
+            "mystripes.climate_stack.fetch_saved_temperature_series",
+            side_effect=fake_fetch_saved_temperature_series,
+        ) as fetch_saved_temperature_series_mock, patch(
+            "mystripes.climate_stack.fetch_point_temperature_series",
+        ) as fetch_point_temperature_series_mock:
+            combined = fetch_saved_climate_series(
+                config=CDSConfig(url="https://example.invalid/api", key="secret"),
+                latitude=48.2,
+                longitude=16.4,
+                start_date=date(1944, 1, 1),
+                end_date=date(1995, 1, 31),
+            )
+
+        self.assertEqual(combined["temperature_c"].round(2).tolist(), [7.0, 20.0, 12.0])
+        self.assertEqual(fetch_saved_temperature_series_mock.call_count, 2)
+        self.assertEqual(fetch_point_temperature_series_mock.call_count, 0)
 
     def test_fetch_saved_climate_series_calibrates_twcr_slice(self) -> None:
         combined_twcr_frame = pd.concat(

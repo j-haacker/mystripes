@@ -752,16 +752,17 @@ def fetch_saved_climate_series(
                 boundary_bbox=boundary_bbox,
                 progress_callback=_forward_source_progress(progress_callback, source_slice),
             )
-            anchor_calibration_frame = anchor_calibration_frame or _fetch_anchor_calibration_frame(
-                config=config,
-                latitude=latitude,
-                longitude=longitude,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=boundary_geojson,
-                boundary_bbox=boundary_bbox,
-                progress_callback=_forward_calibration_progress(progress_callback, source_slice),
-            )
+            if anchor_calibration_frame is None:
+                anchor_calibration_frame = _fetch_anchor_calibration_frame(
+                    config=config,
+                    latitude=latitude,
+                    longitude=longitude,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    boundary_geojson=boundary_geojson,
+                    boundary_bbox=boundary_bbox,
+                    progress_callback=_forward_calibration_progress(progress_callback, source_slice),
+                )
             source_calibration_frames.setdefault(
                 source_slice.source_id,
                 fetch_point_temperature_series(
@@ -796,16 +797,17 @@ def fetch_saved_climate_series(
                 boundary_bbox=boundary_bbox,
                 progress_callback=_forward_source_progress(progress_callback, source_slice),
             )
-            anchor_calibration_frame = anchor_calibration_frame or _fetch_anchor_calibration_frame(
-                config=config,
-                latitude=latitude,
-                longitude=longitude,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=boundary_geojson,
-                boundary_bbox=boundary_bbox,
-                progress_callback=_forward_calibration_progress(progress_callback, source_slice),
-            )
+            if anchor_calibration_frame is None:
+                anchor_calibration_frame = _fetch_anchor_calibration_frame(
+                    config=config,
+                    latitude=latitude,
+                    longitude=longitude,
+                    spatial_mode=spatial_mode,
+                    radius_km=radius_km,
+                    boundary_geojson=boundary_geojson,
+                    boundary_bbox=boundary_bbox,
+                    progress_callback=_forward_calibration_progress(progress_callback, source_slice),
+                )
             source_calibration_frames.setdefault(
                 source_slice.source_id,
                 fetch_twcr_temperature_series(

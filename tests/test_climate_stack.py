@@ -296,6 +296,38 @@ class ClimateStackTests(unittest.TestCase):
             execution_log.index("shared_finish:shared-b"),
         )
 
+    def test_fetch_saved_climate_series_batch_falls_back_to_pending_locations(self) -> None:
+        request = LocationClimateRequest(
+            location_key="a",
+            display_name="A",
+            latitude=48.2082,
+            longitude=16.3738,
+            boundary_geojson=None,
+            boundary_bbox=None,
+            start_date=date(1955, 1, 1),
+            end_date=date(1955, 12, 31),
+        )
+        frame = _monthly_frame("1955-01-01", 1, [1.0])
+
+        with patch(
+            "mystripes.climate_stack.build_climate_batch_plan",
+            return_value=ClimateBatchPlan(
+                location_requests=(request,),
+                shared_tasks=(),
+                location_dependencies={"a": ("missing-shared-task",)},
+            ),
+        ), patch(
+            "mystripes.climate_stack._run_location_task",
+            return_value=frame,
+        ) as run_location_task_mock:
+            result = fetch_saved_climate_series_batch(
+                config=CDSConfig(url="https://example.invalid/api", key="secret"),
+                location_requests=[request],
+            )
+
+        self.assertEqual(set(result), {"a"})
+        self.assertEqual(run_location_task_mock.call_count, 1)
+
     def test_fetch_saved_climate_series_keeps_modern_era5_land_data_unchanged(self) -> None:
         land_frame = _monthly_frame("1955-01-01", 2, [1.0, 2.0])
 

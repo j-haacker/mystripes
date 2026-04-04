@@ -415,7 +415,27 @@ def fetch_saved_climate_series_batch(
             if not done:
                 _drain_progress_queue(event_queue, progress_callback)
 
+        while pending_locations:
+            _, request = pending_locations.popitem()
+            results[request.location_key] = _run_location_task(
+                config,
+                request,
+                spatial_mode,
+                radius_km,
+                event_queue.put,
+            )
+
     _drain_progress_queue(event_queue, progress_callback)
+    missing_locations = [
+        request.location_key
+        for request in batch_plan.location_requests
+        if request.location_key not in results
+    ]
+    if missing_locations:
+        raise ValueError(
+            "Climate-data loading finished without timelines for: "
+            + ", ".join(sorted(missing_locations))
+        )
     return results
 
 

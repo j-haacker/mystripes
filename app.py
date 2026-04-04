@@ -21,10 +21,11 @@ from mystripes.cds import (
     save_local_cds_config,
 )
 from mystripes.climate_stack import (
+    build_climate_batch_plan,
     build_location_climate_requests,
     climate_stack_note,
     estimate_climate_downloads,
-    fetch_saved_climate_series,
+    fetch_saved_climate_series_batch,
     get_climate_dataset_window,
     preflight_download_message,
 )
@@ -438,6 +439,24 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     range_end = str(event.get("range_end") or "")
     dataset_label = str(event.get("dataset_label") or event.get("source_label") or "climate data")
     request_origin = str(event.get("request_origin") or "")
+    location_label = str(event.get("location_label") or "")
+    cache_scope = str(event.get("cache_scope") or "")
+
+    if stage == "batch_plan":
+        return (
+            f"Planned {int(event.get('total_shared_tasks') or 0)} shared source tasks for "
+            f"{int(event.get('total_locations') or 0)} locations."
+        )
+    if stage == "shared_task_started":
+        source_label = str(event.get("source_label") or dataset_label)
+        return f"Starting shared {source_label} preparation."
+    if stage == "shared_task_finished":
+        source_label = str(event.get("source_label") or dataset_label)
+        return f"Finished shared {source_label} preparation."
+    if stage == "location_started":
+        return f"Building the combined climate timeline for {location_label or 'one location'}."
+    if stage == "location_finished":
+        return f"{location_label or 'One location'} is ready."
 
     if stage == "timeline_cache_hit":
         return f"Using the saved {dataset_label} timeline from local cache."
@@ -450,6 +469,10 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     if stage == "missing_range_started":
         return f"Timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
     if stage == "request_cache_hit":
+        if cache_scope == "shared_year":
+            return f"Using a saved shared {dataset_label} yearly file."
+        if cache_scope == "shared_grid":
+            return f"Using a saved shared {dataset_label} grid request."
         if purpose == "calibration":
             return f"Using a saved {dataset_label} calibration window."
         return f"Using a saved {dataset_label} request chunk for {range_start} to {range_end}."
@@ -525,41 +548,36 @@ def _render_temperature_fetch_progress(
     *,
     total_locations: int,
     completed_locations: int,
-    current_location_index: int,
-    current_location_label: str,
+    total_shared_tasks: int,
+    completed_shared_tasks: int,
+    active_locations: int,
+    stage_label: str,
     current_detail: str,
-    completed_request_batches: int,
-    current_request_index: int,
-    current_request_count: int,
-    current_request_complete: bool,
+    recent_updates: list[str],
     started_at: float,
     active: bool,
 ) -> None:
     normalized_total_locations = max(1, total_locations)
-    in_location_fraction = 0.0
-    if active and current_request_count > 0:
-        completed_in_current = current_request_index
-        if not current_request_complete:
-            completed_in_current = max(0, completed_in_current - 1)
-        in_location_fraction = min(1.0, completed_in_current / current_request_count)
-    elif active and current_location_label:
-        in_location_fraction = min(0.06, 1.0 / normalized_total_locations)
-
-    overall_fraction = min(1.0, (completed_locations + in_location_fraction) / normalized_total_locations)
+    location_fraction = min(1.0, completed_locations / normalized_total_locations)
+    shared_fraction = 1.0 if total_shared_tasks == 0 else min(1.0, completed_shared_tasks / total_shared_tasks)
+    overall_fraction = location_fraction if total_shared_tasks == 0 else min(
+        1.0,
+        (0.65 * shared_fraction) + (0.35 * location_fraction),
+    )
     display_fraction = overall_fraction
     if active:
-        display_fraction = max(display_fraction, min(0.04, 1.0 / normalized_total_locations))
+        display_fraction = max(display_fraction, min(0.04, 1.0 / max(1, normalized_total_locations + total_shared_tasks)))
 
     elapsed_seconds = perf_counter() - started_at
     rate_parts: list[str] = []
     if elapsed_seconds > 0 and completed_locations > 0:
         rate_parts.append(_format_progress_rate(completed_locations * 60.0 / elapsed_seconds, "locations"))
-    if elapsed_seconds > 0 and completed_request_batches > 0:
-        rate_parts.append(_format_progress_rate(completed_request_batches * 60.0 / elapsed_seconds, "steps"))
+    if elapsed_seconds > 0 and completed_shared_tasks > 0:
+        rate_parts.append(_format_progress_rate(completed_shared_tasks * 60.0 / elapsed_seconds, "shared tasks"))
 
     title = "Preparing climate-data timelines"
-    if current_location_label:
-        title = f"Location {current_location_index}/{normalized_total_locations}: {current_location_label}"
+    if stage_label:
+        title = stage_label
     if not active and completed_locations >= total_locations:
         title = f"Loaded {completed_locations}/{normalized_total_locations} locations"
 
@@ -569,6 +587,20 @@ def _render_temperature_fetch_progress(
     elapsed_text = f"Elapsed {_format_progress_duration(elapsed_seconds)}"
     width_percent = max(0.0, min(100.0, display_fraction * 100.0))
     active_class = " mystripes-progress-fill-active" if active else ""
+    shared_summary = (
+        f"{completed_shared_tasks}/{total_shared_tasks} shared source tasks ready"
+        if total_shared_tasks
+        else "No shared source downloads needed"
+    )
+    active_summary = (
+        f"{active_locations} location timeline{'s' if active_locations != 1 else ''} active"
+        if active
+        else "No active location tasks"
+    )
+    updates_html = ""
+    if recent_updates:
+        items = "".join(f"<li>{escape(update)}</li>" for update in recent_updates[-4:])
+        updates_html = f'<ul class="mystripes-progress-updates">{items}</ul>'
 
     html = f'''
 <style>
@@ -635,6 +667,14 @@ def _render_temperature_fetch_progress(
   font-size: 0.84rem;
   color: #475569;
 }}
+.mystripes-progress-updates {{
+  margin: 0.7rem 0 0 1rem;
+  color: #475569;
+  font-size: 0.84rem;
+}}
+.mystripes-progress-updates li + li {{
+  margin-top: 0.2rem;
+}}
 </style>
 <div class="mystripes-progress-card">
   <div class="mystripes-progress-kicker">Climate-data load progress</div>
@@ -645,9 +685,12 @@ def _render_temperature_fetch_progress(
   </div>
   <div class="mystripes-progress-meta">
     <span>{escape(summary_left)}</span>
+    <span>{escape(shared_summary)}</span>
+    <span>{escape(active_summary)}</span>
     <span>{escape(summary_right)}</span>
     <span>{escape(elapsed_text)}</span>
   </div>
+  {updates_html}
 </div>
 '''
     placeholder.markdown(html, unsafe_allow_html=True)
@@ -1246,6 +1289,7 @@ def main() -> None:
     fetch_window_start = report_start
     fetch_window_end = analysis_end
     location_requests = []
+    climate_batch_plan = None
     historical_note = None
     historical_download_estimate = None
     reference_resolution_error = None
@@ -1281,6 +1325,11 @@ def main() -> None:
         )
         historical_note = climate_stack_note(fetch_window_start, fetch_window_end)
         historical_download_estimate = estimate_climate_downloads(
+            location_requests,
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+        )
+        climate_batch_plan = build_climate_batch_plan(
             location_requests,
             spatial_mode=spatial_mode,
             radius_km=radius_km,
@@ -1345,6 +1394,7 @@ def main() -> None:
                     "uncached_twcr_years": list(historical_download_estimate.uncached_twcr_years),
                 }
             ),
+            "shared_climate_tasks": 0 if climate_batch_plan is None else len(climate_batch_plan.shared_tasks),
             "watermark": {
                 "text": watermark_text,
                 "horizontal_align": watermark_horizontal_align,
@@ -1376,27 +1426,25 @@ def main() -> None:
     download_progress_placeholder = st.empty()
     download_started_at = perf_counter()
     total_locations = len(unique_periods_by_location)
+    total_shared_tasks = 0 if climate_batch_plan is None else len(climate_batch_plan.shared_tasks)
     completed_locations = 0
-    completed_request_batches = 0
-    current_location_index = 0
-    current_location_label = ""
+    completed_shared_task_ids: set[str] = set()
+    active_location_keys: set[str] = set()
+    stage_label = "Planning shared climate-data fetches"
     current_detail = "Checking saved timelines and determining whether climate-data updates are needed."
-    current_request_index = 0
-    current_request_count = 0
-    current_request_complete = False
+    recent_updates: list[str] = []
 
     def refresh_download_progress(*, active: bool) -> None:
         _render_temperature_fetch_progress(
             download_progress_placeholder,
             total_locations=total_locations,
             completed_locations=completed_locations,
-            current_location_index=current_location_index,
-            current_location_label=current_location_label,
+            total_shared_tasks=total_shared_tasks,
+            completed_shared_tasks=len(completed_shared_task_ids),
+            active_locations=len(active_location_keys),
+            stage_label=stage_label,
             current_detail=current_detail,
-            completed_request_batches=completed_request_batches,
-            current_request_index=current_request_index,
-            current_request_count=current_request_count,
-            current_request_complete=current_request_complete,
+            recent_updates=recent_updates,
             started_at=download_started_at,
             active=active,
         )
@@ -1404,87 +1452,67 @@ def main() -> None:
     refresh_download_progress(active=True)
 
     try:
-        location_frames = {}
-        for location_position, (location_key, request) in enumerate(unique_periods_by_location.items(), start=1):
-            current_location_index = location_position
-            current_location_label = request.display_name
-            current_detail = "Checking saved full timeline and missing months for this place."
-            current_request_index = 0
-            current_request_count = 0
-            current_request_complete = False
-            refresh_download_progress(active=True)
+        def _on_fetch_progress(event: dict[str, object]) -> None:
+            nonlocal completed_locations
+            nonlocal current_detail
+            nonlocal stage_label
 
-            def _on_fetch_progress(
-                event: dict[str, object],
-                *,
-                location_label: str = request.display_name,
-                location_index: int = location_position,
-            ) -> None:
-                nonlocal completed_request_batches
-                nonlocal current_detail
-                nonlocal current_location_index
-                nonlocal current_location_label
-                nonlocal current_request_complete
-                nonlocal current_request_count
-                nonlocal current_request_index
+            stage = str(event.get("stage") or "")
+            work_id = str(event.get("work_id") or "").strip()
+            location_key = str(event.get("location_key") or "").strip()
 
-                current_location_index = location_index
-                current_location_label = location_label
-                stage = str(event.get("stage") or "")
-                request_count = int(event.get("request_count") or 0)
-                request_index = int(event.get("request_index") or 0)
-                if request_count > 0:
-                    current_request_count = request_count
-                if request_index > 0:
-                    current_request_index = request_index
-                if stage == "request_finished":
-                    completed_request_batches += 1
-                current_request_complete = stage in {
-                    "request_cache_hit",
-                    "request_finished",
-                    "point_fetch_completed",
-                    "missing_range_finished",
-                    "source_finished",
-                    "timeline_cache_hit",
-                    "timeline_fetch_completed",
-                }
-                current_detail = _describe_temperature_fetch_event(event)
-                refresh_download_progress(active=True)
+            if stage == "batch_plan":
+                stage_label = "Planning shared climate-data fetches"
+            elif stage == "shared_task_started":
+                stage_label = "Downloading shared source files"
+            elif stage == "shared_task_finished" and work_id:
+                completed_shared_task_ids.add(work_id)
+                if len(completed_shared_task_ids) >= total_shared_tasks and total_locations:
+                    stage_label = "Assembling location timelines"
+            elif stage == "location_started":
+                if location_key:
+                    active_location_keys.add(location_key)
+                stage_label = "Assembling location timelines"
+            elif stage == "location_finished":
+                if location_key:
+                    active_location_keys.discard(location_key)
+                completed_locations += 1
+                if completed_locations >= total_locations:
+                    stage_label = "Finalizing climate-data timelines"
 
-            location_frames[location_key] = fetch_saved_climate_series(
-                config=active_cds_config,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                spatial_mode=spatial_mode,
-                radius_km=radius_km,
-                boundary_geojson=request.boundary_geojson,
-                boundary_bbox=request.boundary_bbox,
-                progress_callback=_on_fetch_progress,
+            detail = _describe_temperature_fetch_event(event)
+            if detail:
+                current_detail = detail
+                if not recent_updates or recent_updates[-1] != detail:
+                    recent_updates.append(detail)
+                    del recent_updates[:-4]
+
+            still_active = (
+                len(completed_shared_task_ids) < total_shared_tasks
+                or completed_locations < total_locations
+                or bool(active_location_keys)
             )
-            completed_locations += 1
-            current_detail = f"{request.display_name} is ready."
-            current_request_complete = True
-            refresh_download_progress(active=completed_locations < total_locations)
+            refresh_download_progress(active=still_active)
+
+        location_frames = fetch_saved_climate_series_batch(
+            config=active_cds_config,
+            location_requests=list(unique_periods_by_location.values()),
+            spatial_mode=spatial_mode,
+            radius_km=radius_km,
+            progress_callback=_on_fetch_progress,
+        )
 
         period_frames = [location_frames[period.location_key] for period in periods_preview]
     except (CDSRequestError, ValueError) as exc:
         _debug_print(debug_mode, "period_fetch_error", str(exc), period_aliases=debug_period_aliases)
-        current_detail = (
-            f"Stopped while loading {current_location_label or 'the selected places'}: {exc}"
-        )
-        current_request_complete = True
+        current_detail = f"Stopped while loading climate data: {exc}"
+        stage_label = "Climate-data loading stopped"
         refresh_download_progress(active=False)
         st.error(str(exc))
         return
 
-    current_location_index = total_locations
-    current_location_label = "All selected places"
+    stage_label = "Climate-data timelines ready"
     current_detail = "All requested climate-data timelines are ready."
-    current_request_index = 0
-    current_request_count = 0
-    current_request_complete = True
     refresh_download_progress(active=False)
     _debug_print(debug_mode, "fetched_period_frames", period_frames, period_aliases=debug_period_aliases)
 

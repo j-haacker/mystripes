@@ -49,17 +49,28 @@ from mystripes.notices import (
     CONTRIBUTING_GUIDE_URL,
     PROJECT_ISSUES_URL,
     PROJECT_REPOSITORY_URL,
+    ERA5_MONTHLY_DATASET_DOI,
     ERA5_MONTHLY_DATASET_NAME,
+    ERA5_REFERENCE_CITATION,
     ERA5_MONTHLY_DATASET_URL,
+    ERA5_LAND_MONTHLY_DATASET_DOI,
     ERA5_LAND_REFERENCE_CITATION,
     ERA5_LAND_MONTHLY_DATASET_NAME,
     ERA5_LAND_MONTHLY_DATASET_URL,
     GENERATED_GRAPHICS_CC0_NOTICE,
+    NASA_GISTEMP_REFERENCE_CITATION,
+    NASA_GISTEMP_SHORT_SOURCE_CREDIT,
+    NASA_GISTEMP_SOURCE_CREDIT,
+    NASA_GISTEMP_WEB_CITATION_GUIDANCE,
+    NASA_GISTEMP_WEB_CITATION_TEMPLATE,
     SHOW_YOUR_STRIPES_CREDIT,
     SHOW_YOUR_STRIPES_URL,
     SOFTWARE_MIT_NOTICE,
+    TWCR_ACKNOWLEDGEMENT_TEXT,
+    TWCR_FOUNDATIONAL_REFERENCE_CITATION,
     TWCR_MONTHLY_DATASET_NAME,
     TWCR_MONTHLY_DATASET_URL,
+    TWCR_REFERENCE_CITATION,
     copernicus_credit_notice,
 )
 from mystripes.plotting import export_figure_bytes, render_stripes_figure
@@ -1912,13 +1923,23 @@ def _render_cds_access_panel(sidebar) -> CDSConfig | None:
 def _render_credit_and_license_panel(current_year: int) -> None:
     with st.expander("Credits and licenses", expanded=False):
         st.markdown(
-            f"- Climate data access stack: `{ERA5_LAND_MONTHLY_DATASET_NAME}`\n"
-            f"- Historical bridge: `{ERA5_MONTHLY_DATASET_NAME}` {ERA5_MONTHLY_DATASET_URL}\n"
-            f"- Historical fallback: `{TWCR_MONTHLY_DATASET_NAME}` {TWCR_MONTHLY_DATASET_URL}\n"
-            f"- Primary dataset page: {ERA5_LAND_MONTHLY_DATASET_URL}\n"
+            f"- Copernicus climate stack: `{ERA5_LAND_MONTHLY_DATASET_NAME}` "
+            f"{ERA5_LAND_MONTHLY_DATASET_URL} (DOI `{ERA5_LAND_MONTHLY_DATASET_DOI}`) and "
+            f"`{ERA5_MONTHLY_DATASET_NAME}` {ERA5_MONTHLY_DATASET_URL} "
+            f"(DOI `{ERA5_MONTHLY_DATASET_DOI}`), both distributed through the Climate Data Store "
+            "under the CDS `CC-BY` licence.\n"
             f"- Inspiration: {SHOW_YOUR_STRIPES_CREDIT} {SHOW_YOUR_STRIPES_URL}\n"
             f"- Copernicus credit notice: {copernicus_credit_notice(current_year)}\n"
             f"- Underlying ERA5-Land reference: {ERA5_LAND_REFERENCE_CITATION}\n"
+            f"- Underlying ERA5 reference: {ERA5_REFERENCE_CITATION}\n"
+            f"- Historical fallback dataset: `{TWCR_MONTHLY_DATASET_NAME}` {TWCR_MONTHLY_DATASET_URL}\n"
+            f"- NOAA PSL requested 20CRv3 acknowledgment: {TWCR_ACKNOWLEDGEMENT_TEXT}\n"
+            f"- 20CRv3 references: {TWCR_REFERENCE_CITATION} {TWCR_FOUNDATIONAL_REFERENCE_CITATION}\n"
+            f"- Global-mean reference context: NASA GISTEMP {NASA_GISTEMP_GLOBAL_MEAN_URL}\n"
+            f"- NASA GISTEMP credit guidance: {NASA_GISTEMP_WEB_CITATION_GUIDANCE} "
+            f"Source credit: `{NASA_GISTEMP_SOURCE_CREDIT}` or `{NASA_GISTEMP_SHORT_SOURCE_CREDIT}`. "
+            f"Template: {NASA_GISTEMP_WEB_CITATION_TEMPLATE}\n"
+            f"- NASA GISTEMP scholarly reference: {NASA_GISTEMP_REFERENCE_CITATION}\n"
             f"- Generated graphics: {GENERATED_GRAPHICS_CC0_NOTICE}\n"
             f"- Software: {SOFTWARE_MIT_NOTICE}"
         )

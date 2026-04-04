@@ -923,6 +923,7 @@ def main() -> None:
     watermark_vertical_align = "center"
     watermark_color = "#FFFFFF"
     watermark_opacity = 0.35
+    watermark_shadow = False
     watermark_max_width_ratio = 0.8
     watermark_max_height_ratio = 0.8
     if watermark_text.strip():
@@ -946,6 +947,11 @@ def main() -> None:
                 step=0.05,
                 format="%.2f",
             )
+        )
+        watermark_shadow = sidebar.checkbox(
+            "Watermark shadow",
+            value=watermark_shadow,
+            help="Adds a dark outline behind the watermark text for stronger contrast.",
         )
         watermark_max_width_ratio = float(
             sidebar.slider(
@@ -1234,6 +1240,7 @@ def main() -> None:
                 "vertical_align": watermark_vertical_align,
                 "color": watermark_color,
                 "opacity": watermark_opacity,
+                "shadow": watermark_shadow,
                 "max_width_ratio": watermark_max_width_ratio,
                 "max_height_ratio": watermark_max_height_ratio,
             },
@@ -1450,6 +1457,7 @@ def main() -> None:
         watermark_vertical_align=watermark_vertical_align,
         watermark_color=watermark_color,
         watermark_opacity=watermark_opacity,
+        watermark_shadow=watermark_shadow,
         watermark_max_width_ratio=watermark_max_width_ratio,
         watermark_max_height_ratio=watermark_max_height_ratio,
         period_indicators=period_indicator_specs,

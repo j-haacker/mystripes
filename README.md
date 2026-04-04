@@ -85,7 +85,7 @@ Trusted Publishing is prepared in [.github/workflows/release.yml](.github/workfl
 
 1. Bump the version in [pyproject.toml](pyproject.toml).
 2. Commit and push to `main`.
-3. Create and push a tag such as `v0.1.0`.
+3. Create and push a tag such as `v0.1.1`.
 4. Let GitHub Actions build and publish the package to PyPI.
 
 The workflow uses the GitHub environment name `pypi`, so you can add deployment protection rules there if you want a manual approval step before upload.

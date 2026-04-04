@@ -2,7 +2,7 @@
 name = "mystripes"
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
-version = "0.1.0"
+version = "0.1.1"
 
 [tasks]
 start = "streamlit run app.py"

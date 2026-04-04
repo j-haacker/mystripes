@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from mystripes.cds import (
@@ -19,6 +20,7 @@ from mystripes.cds import (
     fetch_point_temperature_series,
     fetch_saved_temperature_series,
     parse_temperature_file,
+    parse_temperature_netcdf_grid,
 )
 from mystripes.models import CDSConfig
 
@@ -153,6 +155,82 @@ class MonthlyCDSTests(unittest.TestCase):
                 parse_temperature_file(path, target_latitude=0.0, target_longitude=0.0)
 
         self.assertIn("binary file", str(context.exception))
+
+    def test_parse_temperature_netcdf_grid_serializes_netcdf_reads(self) -> None:
+        events: list[str] = []
+
+        class RecordingLock:
+            def __enter__(self):
+                events.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("lock_exit")
+                return False
+
+        class FakeVariable:
+            def __init__(self, values, *, units: str = "", dimensions: tuple[str, ...] = ()) -> None:
+                self._values = values
+                self.units = units
+                self.dimensions = dimensions
+
+            def __getitem__(self, key):
+                return self._values
+
+        class FakeDataset:
+            def __init__(self) -> None:
+                events.append("dataset_open")
+                self.variables = {
+                    "time": FakeVariable([0.0]),
+                    "lat": FakeVariable([48.0]),
+                    "lon": FakeVariable([16.0]),
+                    "air": FakeVariable([[[273.15]]], units="K", dimensions=("time", "lat", "lon")),
+                }
+
+            def __enter__(self):
+                events.append("dataset_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("dataset_exit")
+                return False
+
+        fake_netcdf4 = SimpleNamespace(Dataset=lambda path: FakeDataset())
+        expected = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2020-01-01T00:00:00Z")],
+                "temperature_c": [0.0],
+                "sample_days": [31],
+                "grid_latitude": [48.0],
+                "grid_longitude": [16.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "response.nc"
+            path.write_bytes(b"CDF")
+
+            with patch.dict("sys.modules", {"netCDF4": fake_netcdf4}), patch(
+                "mystripes.cds._NETCDF_READ_LOCK",
+                RecordingLock(),
+            ), patch(
+                "mystripes.cds._extract_temperature_cube",
+                return_value=np.array([[[273.15]]], dtype=float),
+            ), patch(
+                "mystripes.cds._extract_timestamps",
+                return_value=[pd.Timestamp("2020-01-01T00:00:00Z")],
+            ), patch(
+                "mystripes.cds._grid_frame_from_cube",
+                return_value=expected,
+            ):
+                frame = parse_temperature_netcdf_grid(
+                    path,
+                    target_latitude=48.2,
+                    target_longitude=16.3,
+                )
+
+        self.assertEqual(events, ["lock_enter", "dataset_open", "dataset_enter", "dataset_exit", "lock_exit"])
+        pd.testing.assert_frame_equal(frame, expected)
 
     def test_fetch_point_temperature_series_reuses_cached_response(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []

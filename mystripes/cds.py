@@ -71,6 +71,7 @@ GRID_STEP_DEGREES = ERA5_LAND_MONTHLY_DATASET.grid_step_degrees
 
 _CACHE_PATH_LOCKS: dict[str, threading.Lock] = {}
 _CACHE_PATH_LOCKS_GUARD = threading.Lock()
+_NETCDF_READ_LOCK = threading.Lock()
 
 
 class CDSCredentialsMissingError(RuntimeError):
@@ -606,45 +607,48 @@ def parse_temperature_netcdf_grid(
             "netCDF4 is not installed. Install the dependencies from requirements.txt."
         ) from exc
 
-    try:
-        dataset_handle = netCDF4.Dataset(path)
-    except (OSError, RuntimeError) as exc:
-        raise CDSRequestError(f"Could not open the climate-data NetCDF file: {exc}") from exc
+    # netCDF4/HDF5 file access is not reliably thread-safe across parallel
+    # location assembly, so keep the entire open/read/close sequence serialized.
+    with _NETCDF_READ_LOCK:
+        try:
+            dataset_handle = netCDF4.Dataset(path)
+        except (OSError, RuntimeError) as exc:
+            raise CDSRequestError(f"Could not open the climate-data NetCDF file: {exc}") from exc
 
-    with dataset_handle as dataset:
-        time_variable_name = _find_first_name(dataset.variables, ("valid_time", "time"))
-        if time_variable_name is None:
-            raise CDSRequestError("Could not identify the time variable in the CDS NetCDF file.")
+        with dataset_handle as dataset:
+            time_variable_name = _find_first_name(dataset.variables, ("valid_time", "time"))
+            if time_variable_name is None:
+                raise CDSRequestError("Could not identify the time variable in the CDS NetCDF file.")
 
-        temperature_variable_name = _resolve_temperature_variable_name(dataset)
-        temperature_variable = dataset.variables[temperature_variable_name]
-        time_variable = dataset.variables[time_variable_name]
+            temperature_variable_name = _resolve_temperature_variable_name(dataset)
+            temperature_variable = dataset.variables[temperature_variable_name]
+            time_variable = dataset.variables[time_variable_name]
 
-        latitude_name = _find_first_name(dataset.variables, ("latitude", "lat"))
-        longitude_name = _find_first_name(dataset.variables, ("longitude", "lon"))
-        if latitude_name is None or longitude_name is None:
-            raise CDSRequestError("Could not identify latitude/longitude coordinates in the CDS NetCDF file.")
+            latitude_name = _find_first_name(dataset.variables, ("latitude", "lat"))
+            longitude_name = _find_first_name(dataset.variables, ("longitude", "lon"))
+            if latitude_name is None or longitude_name is None:
+                raise CDSRequestError("Could not identify latitude/longitude coordinates in the CDS NetCDF file.")
 
-        latitudes = np.asarray(dataset.variables[latitude_name][:], dtype=float).reshape(-1)
-        longitudes = _normalize_longitudes(
-            np.asarray(dataset.variables[longitude_name][:], dtype=float).reshape(-1)
-        )
-        data = _extract_temperature_cube(
-            dataset=dataset,
-            variable_name=temperature_variable_name,
-            time_variable_name=time_variable_name,
-            latitude_name=latitude_name,
-            longitude_name=longitude_name,
-        )
-        timestamps = _extract_timestamps(netCDF4, time_variable)
+            latitudes = np.asarray(dataset.variables[latitude_name][:], dtype=float).reshape(-1)
+            longitudes = _normalize_longitudes(
+                np.asarray(dataset.variables[longitude_name][:], dtype=float).reshape(-1)
+            )
+            data = _extract_temperature_cube(
+                dataset=dataset,
+                variable_name=temperature_variable_name,
+                time_variable_name=time_variable_name,
+                latitude_name=latitude_name,
+                longitude_name=longitude_name,
+            )
+            timestamps = _extract_timestamps(netCDF4, time_variable)
 
-        units = str(getattr(temperature_variable, "units", "") or getattr(temperature_variable, "GRIB_units", ""))
-        temperature_c = data - 273.15 if units.upper().startswith("K") else data
-        frame = _grid_frame_from_cube(timestamps, latitudes, longitudes, temperature_c)
-        frame = frame.dropna().sort_values("timestamp").reset_index(drop=True)
-        if frame.empty:
-            raise CDSRequestError("The CDS NetCDF file did not contain usable temperature rows.")
-        return frame
+            units = str(getattr(temperature_variable, "units", "") or getattr(temperature_variable, "GRIB_units", ""))
+            temperature_c = data - 273.15 if units.upper().startswith("K") else data
+            frame = _grid_frame_from_cube(timestamps, latitudes, longitudes, temperature_c)
+            frame = frame.dropna().sort_values("timestamp").reset_index(drop=True)
+            if frame.empty:
+                raise CDSRequestError("The CDS NetCDF file did not contain usable temperature rows.")
+            return frame
 
 
 def _dataset_window_from_constraints(

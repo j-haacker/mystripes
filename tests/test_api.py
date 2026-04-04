@@ -240,6 +240,10 @@ class PublicAPITests(unittest.TestCase):
         self.assertAlmostEqual(float(axis.texts[0].get_position()[1]), scale_bar_bottom_label_y, places=6)
         self.assertEqual(len(axis.lines), 0)
         self.assertEqual(len(axis.patches), 2)
+        arrow_style = axis.patches[0].get_arrowstyle()
+        self.assertEqual(type(arrow_style).__name__, "CurveFilledAB")
+        self.assertAlmostEqual(float(arrow_style.head_length), 0.65, places=6)
+        self.assertAlmostEqual(float(arrow_style.head_width), 0.12, places=6)
         figure.clf()
 
     def test_plot_stripes_supports_centered_period_indicators_and_height_scaling(self) -> None:

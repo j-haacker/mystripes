@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch
+from matplotlib.patches import ArrowStyle, FancyArrowPatch
 
 STRIPES_COLORS = [
     "#08306b",
@@ -32,6 +32,7 @@ STRIPES_COLORS = [
 _WATERMARK_PADDING_RATIO = 0.02
 _PERIOD_INDICATOR_MIN_GAP_PIXELS = 1.0
 _PERIOD_INDICATOR_PADDING_RATIO = 0.02
+_OUTWARD_ARROW_STYLE = ArrowStyle.CurveFilledAB(head_length=0.65, head_width=0.12)
 
 _WATERMARK_HORIZONTAL_POSITIONS = {
     "left": (_WATERMARK_PADDING_RATIO, "left", 1 - _WATERMARK_PADDING_RATIO),
@@ -281,7 +282,7 @@ def _add_period_indicators(
                     (start_fraction, line_y),
                     (end_fraction, line_y),
                     transform=axis.transAxes,
-                    arrowstyle="<|-|>",
+                    arrowstyle=_OUTWARD_ARROW_STYLE,
                     mutation_scale=arrow_scale,
                     linewidth=line_width,
                     color=color,

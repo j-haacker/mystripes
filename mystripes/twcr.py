@@ -38,10 +38,8 @@ TWCR_MAX_END = date(2015, 12, 31)
 TWCR_CACHE_DIR = TEMPERATURE_CACHE_DIR / TWCR_SOURCE_ID
 TWCR_REQUEST_CACHE_DIR = TWCR_CACHE_DIR / "window-cache"
 TWCR_TIMELINE_CACHE_DIR = TWCR_CACHE_DIR / "timeline-cache"
-TWCR_RAW_YEAR_CACHE_DIR = TWCR_CACHE_DIR / "raw-year-files"
 TWCR_GRID_REQUEST_CACHE_DIR = TWCR_CACHE_DIR / "grid-year-requests"
 TWCR_GRID_STEP_DEGREES = 1.0
-TWCR_SUBSET_MAX_GRID_CELLS = 64
 
 
 @dataclass(frozen=True)
@@ -66,7 +64,6 @@ def fetch_twcr_temperature_series(
     request_area_override: tuple[float, float, float, float] | None = None,
     cache_dir: Path | None = TWCR_REQUEST_CACHE_DIR,
     grid_request_cache_dir: Path | None = TWCR_GRID_REQUEST_CACHE_DIR,
-    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
     progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     _validate_twcr_date_range(start_date, end_date)
@@ -209,7 +206,6 @@ def fetch_saved_twcr_temperature_series(
     cache_dir: Path | None = TWCR_TIMELINE_CACHE_DIR,
     request_cache_dir: Path | None = TWCR_REQUEST_CACHE_DIR,
     grid_request_cache_dir: Path | None = TWCR_GRID_REQUEST_CACHE_DIR,
-    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
     progress_callback: ProgressCallback | None = None,
 ) -> pd.DataFrame:
     _validate_twcr_date_range(start_date, end_date)
@@ -296,7 +292,6 @@ def fetch_saved_twcr_temperature_series(
                 else request_area_overrides.get((missing_start, missing_end)),
                 cache_dir=request_cache_dir,
                 grid_request_cache_dir=grid_request_cache_dir,
-                raw_year_cache_dir=raw_year_cache_dir,
                 progress_callback=_forward_progress,
             )
         )
@@ -327,21 +322,6 @@ def fetch_saved_twcr_temperature_series(
     return _slice_temperature_series(combined, start_date=start_date, end_date=end_date)
 
 
-def estimate_missing_twcr_years(
-    start_date: date,
-    end_date: date,
-    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
-) -> list[int]:
-    _validate_twcr_date_range(start_date, end_date)
-    if raw_year_cache_dir is None:
-        return _years_in_range(start_date, end_date)
-    return [
-        year
-        for year in _years_in_range(start_date, end_date)
-        if not _twcr_raw_year_path(raw_year_cache_dir, year).exists()
-    ]
-
-
 def plan_twcr_downloads(
     *,
     latitude: float,
@@ -352,7 +332,6 @@ def plan_twcr_downloads(
     radius_km: float | None,
     boundary_geojson: dict[str, Any] | None,
     boundary_bbox: tuple[float, float, float, float] | None,
-    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
     grid_request_cache_dir: Path | None = TWCR_GRID_REQUEST_CACHE_DIR,
 ) -> tuple[TWCRDownloadWork, ...]:
     _validate_twcr_date_range(start_date, end_date)
@@ -382,46 +361,8 @@ def _validate_twcr_date_range(start_date: date, end_date: date) -> None:
         )
 
 
-def _years_in_range(start_date: date, end_date: date) -> list[int]:
-    return list(range(start_date.year, end_date.year + 1))
-
-
 def _month_count_in_range(start_date: date, end_date: date) -> int:
     return (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month) + 1
-
-
-def _download_twcr_year_file(year: int, target_path: Path) -> None:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    query = {
-        "var": "air",
-        "time_start": f"{year:04d}-01-01T00:00:00Z",
-        "time_end": f"{year:04d}-12-31T23:59:59Z",
-        "horizStride": 1,
-        "timeStride": 1,
-        "accept": "netcdf4",
-    }
-    _download_twcr_file(query, target_path)
-
-
-def _download_twcr_subset_year_file(
-    year: int,
-    area: tuple[float, float, float, float],
-    target_path: Path,
-) -> None:
-    north, west, south, east = area
-    query = {
-        "var": "air",
-        "north": north,
-        "west": west,
-        "south": south,
-        "east": east,
-        "time_start": f"{year:04d}-01-01T00:00:00Z",
-        "time_end": f"{year:04d}-12-31T23:59:59Z",
-        "horizStride": 1,
-        "timeStride": 1,
-        "accept": "netcdf4",
-    }
-    _download_twcr_file(query, target_path)
 
 
 def _download_twcr_subset_window_file(
@@ -457,38 +398,6 @@ def _download_twcr_file(query: dict[str, Any], target_path: Path) -> None:
             if chunk:
                 handle.write(chunk)
     temporary_path.replace(target_path)
-
-
-def ensure_twcr_year_cached(
-    year: int,
-    raw_year_cache_dir: Path | None = TWCR_RAW_YEAR_CACHE_DIR,
-    progress_callback: ProgressCallback | None = None,
-) -> Path:
-    return _ensure_twcr_year_cached(
-        year,
-        raw_year_cache_dir=raw_year_cache_dir,
-        progress_callback=progress_callback,
-        request_index=1,
-        request_count=1,
-    )
-
-
-def ensure_twcr_grid_year_cached(
-    year: int,
-    area: tuple[float, float, float, float],
-    grid_request_cache_dir: Path | None = TWCR_GRID_REQUEST_CACHE_DIR,
-    progress_callback: ProgressCallback | None = None,
-) -> Path:
-    return _ensure_twcr_grid_year_cached(
-        year,
-        area=area,
-        grid_request_cache_dir=grid_request_cache_dir,
-        progress_callback=progress_callback,
-        request_index=1,
-        request_count=1,
-    )
-
-
 def ensure_twcr_grid_window_cached(
     start_date: date,
     end_date: date,
@@ -505,105 +414,6 @@ def ensure_twcr_grid_window_cached(
         request_index=1,
         request_count=1,
     )
-
-
-def _ensure_twcr_year_cached(
-    year: int,
-    *,
-    raw_year_cache_dir: Path | None,
-    progress_callback: ProgressCallback | None,
-    request_index: int,
-    request_count: int,
-) -> Path:
-    raw_year_path = _twcr_raw_year_path(raw_year_cache_dir, year)
-    if raw_year_path.exists():
-        return raw_year_path
-
-    with cache_path_lock(raw_year_path):
-        if raw_year_path.exists():
-            _emit_progress(
-                progress_callback,
-                "request_cache_hit",
-                dataset=TWCR_SOURCE_ID,
-                dataset_label=TWCR_DISPLAY_NAME,
-                start_date=f"{year:04d}-01-01",
-                end_date=f"{year:04d}-12-31",
-                request_count=0,
-                cache_scope="shared_year",
-                work_id=str(raw_year_path),
-            )
-            return raw_year_path
-
-        try:
-            _download_twcr_year_file(year, raw_year_path)
-        except Exception as exc:  # pragma: no cover - depends on external service.
-            _emit_progress(
-                progress_callback,
-                "request_failed",
-                dataset=TWCR_SOURCE_ID,
-                dataset_label=TWCR_DISPLAY_NAME,
-                request_index=request_index,
-                request_count=request_count,
-                request_year_start=str(year),
-                request_year_end=str(year),
-                month_count=12,
-                message=f"20CRv3 download for {year} failed: {exc}",
-                cache_scope="shared_year",
-                work_id=str(raw_year_path),
-            )
-            raise CDSRequestError(f"20CRv3 download for {year} failed: {exc}") from exc
-    return raw_year_path
-
-
-def _ensure_twcr_grid_year_cached(
-    year: int,
-    *,
-    area: tuple[float, float, float, float],
-    grid_request_cache_dir: Path | None,
-    progress_callback: ProgressCallback | None,
-    request_index: int,
-    request_count: int,
-) -> Path:
-    grid_request_path = _twcr_grid_request_path(grid_request_cache_dir, year, area)
-    if grid_request_path.exists():
-        return grid_request_path
-
-    with cache_path_lock(grid_request_path):
-        if grid_request_path.exists():
-            _emit_progress(
-                progress_callback,
-                "request_cache_hit",
-                dataset=TWCR_SOURCE_ID,
-                dataset_label=TWCR_DISPLAY_NAME,
-                start_date=f"{year:04d}-01-01",
-                end_date=f"{year:04d}-12-31",
-                request_count=0,
-                cache_scope="shared_grid",
-                work_id=str(grid_request_path),
-            )
-            return grid_request_path
-
-        try:
-            _download_twcr_subset_year_file(year, area, grid_request_path)
-        except Exception as exc:  # pragma: no cover - depends on external service.
-            _emit_progress(
-                progress_callback,
-                "request_failed",
-                dataset=TWCR_SOURCE_ID,
-                dataset_label=TWCR_DISPLAY_NAME,
-                request_index=request_index,
-                request_count=request_count,
-                request_year_start=str(year),
-                request_year_end=str(year),
-                month_count=12,
-                message=f"20CRv3 subset download for {year} failed: {exc}",
-                cache_scope="shared_grid",
-                work_id=str(grid_request_path),
-            )
-            raise CDSRequestError(f"20CRv3 subset download for {year} failed: {exc}") from exc
-    return grid_request_path
-
-
 def _ensure_twcr_grid_window_cached(
     *,
     start_date: date,
@@ -664,34 +474,6 @@ def _ensure_twcr_grid_window_cached(
                 f"20CRv3 bbox download for {start_date.isoformat()} to {end_date.isoformat()} failed: {exc}"
             ) from exc
     return grid_request_path
-
-
-def _twcr_raw_year_path(raw_year_cache_dir: Path | None, year: int) -> Path:
-    if raw_year_cache_dir is None:
-        raise ValueError("A raw-year cache directory is required for 20CRv3 downloads.")
-    return raw_year_cache_dir / f"air.2m.mon.mean.{year:04d}.nc"
-
-
-def _twcr_grid_request_path(
-    grid_request_cache_dir: Path | None,
-    year: int,
-    area: tuple[float, float, float, float],
-) -> Path:
-    if grid_request_cache_dir is None:
-        raise ValueError("A grid-request cache directory is required for 20CRv3 subset downloads.")
-    payload = {
-        "cache_version": 1,
-        "cache_type": "grid_year",
-        "dataset": TWCR_SOURCE_ID,
-        "year": year,
-        "area": [round(value, 6) for value in area],
-    }
-    key = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    ).hexdigest()
-    return grid_request_cache_dir / f"{key}.nc"
-
-
 def _twcr_grid_window_request_path(
     grid_request_cache_dir: Path | None,
     *,
@@ -951,19 +733,6 @@ def _twcr_download_work_for_window(
         end_date=end_date,
         area=request_area,
     )
-
-
-def _should_use_twcr_subset(request_area: tuple[float, float, float, float]) -> bool:
-    return _twcr_grid_cell_count(request_area) <= TWCR_SUBSET_MAX_GRID_CELLS
-
-
-def _twcr_grid_cell_count(area: tuple[float, float, float, float]) -> int:
-    north, west, south, east = area
-    latitude_cells = max(1, int(round((north - south) / TWCR_GRID_STEP_DEGREES)) + 1)
-    longitude_cells = max(1, int(round((east - west) / TWCR_GRID_STEP_DEGREES)) + 1)
-    return latitude_cells * longitude_cells
-
-
 def _drop_twcr_cached_file(path: Path) -> None:
     if not path.exists():
         return

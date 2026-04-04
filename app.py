@@ -481,8 +481,6 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     if stage == "missing_range_started":
         return f"Timeline segment {range_index}/{range_count}: {range_start} to {range_end}."
     if stage == "request_cache_hit":
-        if cache_scope == "shared_year":
-            return f"Using a saved shared {dataset_label} yearly file."
         if cache_scope == "shared_grid":
             return f"Using a saved shared {dataset_label} grid request."
         if cache_scope == "shared_grid_window":

@@ -13,3 +13,5 @@ pixi.lock
 .coverage.*
 coverage.xml
 htmlcov/
+.codex
+.codex/

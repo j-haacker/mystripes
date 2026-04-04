@@ -53,6 +53,7 @@ def render_stripes_figure(
     watermark_vertical_align: str = "center",
     watermark_color: str = "#ffffff",
     watermark_opacity: float = 0.35,
+    watermark_shadow: bool = False,
     watermark_max_width_ratio: float = 0.8,
     watermark_max_height_ratio: float = 0.8,
     period_indicators: Sequence[Mapping[str, object]] | None = None,
@@ -89,6 +90,7 @@ def render_stripes_figure(
         vertical_align=watermark_vertical_align,
         color=watermark_color,
         opacity=watermark_opacity,
+        shadow=watermark_shadow,
         max_width_ratio=watermark_max_width_ratio,
         max_height_ratio=watermark_max_height_ratio,
     )
@@ -123,6 +125,7 @@ def _add_watermark(
     vertical_align: str,
     color: str,
     opacity: float,
+    shadow: bool,
     max_width_ratio: float,
     max_height_ratio: float,
 ) -> None:
@@ -155,6 +158,14 @@ def _add_watermark(
         fontsize=100,
         fontweight="bold",
         zorder=3,
+        path_effects=(
+            [
+                patheffects.Stroke(linewidth=2.2, foreground=(0.0, 0.0, 0.0, 0.5)),
+                patheffects.Normal(),
+            ]
+            if shadow
+            else None
+        ),
     )
 
     figure = axis.figure

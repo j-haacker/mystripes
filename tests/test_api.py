@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+from matplotlib import patheffects
 from matplotlib.colors import to_hex
 
 from mystripes.api import build_period_indicator_specs, build_stripe_data, plot_stripes
@@ -355,6 +356,7 @@ class PublicAPITests(unittest.TestCase):
             watermark_vertical_align="bottom",
             watermark_color="#ff0000",
             watermark_opacity=0.25,
+            watermark_shadow=True,
             watermark_max_width_ratio=0.5,
             watermark_max_height_ratio=0.6,
         )
@@ -369,6 +371,8 @@ class PublicAPITests(unittest.TestCase):
         self.assertAlmostEqual(float(watermark.get_alpha()), 0.25, places=6)
         self.assertAlmostEqual(float(watermark.get_position()[0]), 0.98, places=6)
         self.assertAlmostEqual(float(watermark.get_position()[1]), 0.02, places=6)
+        self.assertEqual(len(watermark.get_path_effects()), 2)
+        self.assertIsInstance(watermark.get_path_effects()[0], patheffects.Stroke)
 
         figure.canvas.draw()
         renderer = figure.canvas.get_renderer()

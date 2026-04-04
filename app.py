@@ -543,6 +543,9 @@ def _describe_temperature_fetch_event(event: dict[str, object]) -> str:
     if stage == "request_failed":
         message = str(event.get("message") or "")
         return message or "A CDS request failed."
+    if stage == "request_recovery":
+        message = str(event.get("message") or "")
+        return message or f"Retrying {dataset_label} after a cache read problem."
     if stage == "point_fetch_completed":
         if purpose == "calibration":
             return f"Prepared the {dataset_label} calibration monthly series."

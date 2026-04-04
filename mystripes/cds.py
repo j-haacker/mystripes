@@ -606,7 +606,12 @@ def parse_temperature_netcdf_grid(
             "netCDF4 is not installed. Install the dependencies from requirements.txt."
         ) from exc
 
-    with netCDF4.Dataset(path) as dataset:
+    try:
+        dataset_handle = netCDF4.Dataset(path)
+    except (OSError, RuntimeError) as exc:
+        raise CDSRequestError(f"Could not open the climate-data NetCDF file: {exc}") from exc
+
+    with dataset_handle as dataset:
         time_variable_name = _find_first_name(dataset.variables, ("valid_time", "time"))
         if time_variable_name is None:
             raise CDSRequestError("Could not identify the time variable in the CDS NetCDF file.")

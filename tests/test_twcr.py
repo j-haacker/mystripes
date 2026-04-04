@@ -163,6 +163,120 @@ class HistoricalTwentyCRTests(unittest.TestCase):
         self.assertEqual(downloaded_subset_years, [1938])
         self.assertEqual(result["temperature_c"].tolist(), [1938.0] * 12)
 
+    def test_fetch_twcr_temperature_series_recovers_from_unreadable_subset_cache(self) -> None:
+        downloaded_raw_years: list[int] = []
+        parse_calls: list[str] = []
+
+        def fake_download_raw(year: int, target_path: Path) -> None:
+            downloaded_raw_years.append(year)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"CDF")
+
+        def fake_parse(path: Path, target_latitude: float, target_longitude: float):
+            parse_calls.append(path.name)
+            if path.suffix == ".nc" and len(parse_calls) == 1:
+                raise RuntimeError("NetCDF: Can't open HDF5 attribute")
+            return pd.DataFrame(
+                {
+                    "timestamp": [pd.Timestamp("1938-01-01T00:00:00Z")],
+                    "temperature_c": [0.0],
+                    "sample_days": [31],
+                    "grid_latitude": [48.0],
+                    "grid_longitude": [16.0],
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_cache_dir = Path(tmpdir) / "raw"
+            grid_cache_dir = Path(tmpdir) / "grid"
+            window_cache_dir = Path(tmpdir) / "window"
+            broken_subset_path = grid_cache_dir / "broken.nc"
+            broken_subset_path.parent.mkdir(parents=True, exist_ok=True)
+            broken_subset_path.write_bytes(b"\x89HDF\r\n\x1a\n")
+
+            with patch(
+                "mystripes.twcr._resolve_twcr_year_source_path",
+                return_value=(broken_subset_path, "year_subset", "local_cache"),
+            ), patch(
+                "mystripes.twcr._download_twcr_year_file",
+                side_effect=fake_download_raw,
+            ), patch(
+                "mystripes.twcr.parse_temperature_file",
+                side_effect=fake_parse,
+            ), patch(
+                "mystripes.twcr._aggregate_spatial_selection",
+                return_value=_aggregated_year_frame(1938),
+            ):
+                result = fetch_twcr_temperature_series(
+                    latitude=48.2,
+                    longitude=16.4,
+                    start_date=date(1938, 1, 1),
+                    end_date=date(1938, 12, 31),
+                    cache_dir=window_cache_dir,
+                    grid_request_cache_dir=grid_cache_dir,
+                    raw_year_cache_dir=raw_cache_dir,
+                )
+
+        self.assertEqual(downloaded_raw_years, [1938])
+        self.assertEqual(result["temperature_c"].tolist(), [1938.0] * 12)
+
+    def test_fetch_twcr_temperature_series_recovers_from_unreadable_full_year_cache(self) -> None:
+        downloaded_raw_years: list[int] = []
+        parse_calls: list[str] = []
+
+        def fake_download_raw(year: int, target_path: Path) -> None:
+            downloaded_raw_years.append(year)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"CDF")
+
+        def fake_parse(path: Path, target_latitude: float, target_longitude: float):
+            parse_calls.append(path.name)
+            if len(parse_calls) == 1:
+                raise RuntimeError("NetCDF: Can't open HDF5 attribute")
+            return pd.DataFrame(
+                {
+                    "timestamp": [pd.Timestamp("1938-01-01T00:00:00Z")],
+                    "temperature_c": [0.0],
+                    "sample_days": [31],
+                    "grid_latitude": [48.0],
+                    "grid_longitude": [16.0],
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_cache_dir = Path(tmpdir) / "raw"
+            window_cache_dir = Path(tmpdir) / "window"
+            raw_path = raw_cache_dir / "air.2m.mon.mean.1938.nc"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_bytes(b"\x89HDF\r\n\x1a\n")
+
+            with patch(
+                "mystripes.twcr._resolve_twcr_year_source_path",
+                return_value=(raw_path, "full_year", "local_cache"),
+            ), patch(
+                "mystripes.twcr._download_twcr_year_file",
+                side_effect=fake_download_raw,
+            ), patch(
+                "mystripes.twcr.parse_temperature_file",
+                side_effect=fake_parse,
+            ), patch(
+                "mystripes.twcr._aggregate_spatial_selection",
+                return_value=_aggregated_year_frame(1938),
+            ):
+                result = fetch_twcr_temperature_series(
+                    latitude=48.2,
+                    longitude=16.4,
+                    start_date=date(1938, 1, 1),
+                    end_date=date(1938, 12, 31),
+                    cache_dir=window_cache_dir,
+                    raw_year_cache_dir=raw_cache_dir,
+                    spatial_mode="boundary",
+                    boundary_bbox=(30.0, 70.0, -20.0, 80.0),
+                )
+
+        self.assertEqual(downloaded_raw_years, [1938])
+        self.assertEqual(result["temperature_c"].tolist(), [1938.0] * 12)
+
     def test_fetch_saved_twcr_temperature_series_reuses_timeline_cache(self) -> None:
         download_years: list[int] = []
 

@@ -138,10 +138,19 @@ def fetch_twcr_temperature_series(
             work_id=str(request_path),
         )
 
-        grid_frame = parse_temperature_file(
-            request_path,
+        grid_frame, request_path, request_scope, request_origin = _load_twcr_grid_frame_with_recovery(
+            year=year,
+            request_path=request_path,
+            request_scope=request_scope,
+            request_origin=request_origin,
+            request_area=request_area,
             target_latitude=latitude,
             target_longitude=longitude,
+            raw_year_cache_dir=raw_year_cache_dir,
+            grid_request_cache_dir=grid_request_cache_dir,
+            progress_callback=progress_callback,
+            request_index=request_index,
+            request_count=len(years),
         )
         frames.append(
             _aggregate_spatial_selection(
@@ -705,6 +714,119 @@ def _resolve_twcr_year_source_path(
     return request_path, "full_year", "download"
 
 
+def _load_twcr_grid_frame_with_recovery(
+    *,
+    year: int,
+    request_path: Path,
+    request_scope: str,
+    request_origin: str,
+    request_area: tuple[float, float, float, float],
+    target_latitude: float,
+    target_longitude: float,
+    raw_year_cache_dir: Path | None,
+    grid_request_cache_dir: Path | None,
+    progress_callback: ProgressCallback | None,
+    request_index: int,
+    request_count: int,
+) -> tuple[pd.DataFrame, Path, str, str]:
+    try:
+        frame = parse_temperature_file(
+            request_path,
+            target_latitude=target_latitude,
+            target_longitude=target_longitude,
+        )
+        return frame, request_path, request_scope, request_origin
+    except (CDSRequestError, OSError, RuntimeError, ValueError) as exc:
+        recovered_path, recovered_scope, recovered_origin = _recover_twcr_request_path(
+            year=year,
+            request_path=request_path,
+            request_scope=request_scope,
+            request_area=request_area,
+            raw_year_cache_dir=raw_year_cache_dir,
+            grid_request_cache_dir=grid_request_cache_dir,
+            progress_callback=progress_callback,
+            request_index=request_index,
+            request_count=request_count,
+            error=exc,
+        )
+        try:
+            frame = parse_temperature_file(
+                recovered_path,
+                target_latitude=target_latitude,
+                target_longitude=target_longitude,
+            )
+            return frame, recovered_path, recovered_scope, recovered_origin
+        except (CDSRequestError, OSError, RuntimeError, ValueError) as recovered_exc:
+            raise CDSRequestError(
+                f"20CRv3 data for {year} could not be read after retry: {recovered_exc}"
+            ) from recovered_exc
+
+
+def _recover_twcr_request_path(
+    *,
+    year: int,
+    request_path: Path,
+    request_scope: str,
+    request_area: tuple[float, float, float, float],
+    raw_year_cache_dir: Path | None,
+    grid_request_cache_dir: Path | None,
+    progress_callback: ProgressCallback | None,
+    request_index: int,
+    request_count: int,
+    error: Exception,
+) -> tuple[Path, str, str]:
+    _drop_twcr_cached_file(request_path)
+
+    if request_scope == "year_subset":
+        _emit_progress(
+            progress_callback,
+            "request_recovery",
+            dataset=TWCR_SOURCE_ID,
+            dataset_label=TWCR_DISPLAY_NAME,
+            request_index=request_index,
+            request_count=request_count,
+            request_year_start=str(year),
+            request_year_end=str(year),
+            month_count=12,
+            request_scope=request_scope,
+            work_id=str(request_path),
+            message=(
+                f"Retrying 20CRv3 {year} with the full yearly file after an unreadable subset cache: {error}"
+            ),
+        )
+        raw_year_path = _ensure_twcr_year_cached(
+            year,
+            raw_year_cache_dir=raw_year_cache_dir,
+            progress_callback=progress_callback,
+            request_index=request_index,
+            request_count=request_count,
+        )
+        return raw_year_path, "full_year", "download"
+
+    _emit_progress(
+        progress_callback,
+        "request_recovery",
+        dataset=TWCR_SOURCE_ID,
+        dataset_label=TWCR_DISPLAY_NAME,
+        request_index=request_index,
+        request_count=request_count,
+        request_year_start=str(year),
+        request_year_end=str(year),
+        month_count=12,
+        request_scope=request_scope,
+        work_id=str(request_path),
+        message=f"Redownloading unreadable 20CRv3 yearly file for {year}: {error}",
+    )
+    raw_year_path = _ensure_twcr_year_cached(
+        year,
+        raw_year_cache_dir=raw_year_cache_dir,
+        progress_callback=progress_callback,
+        request_index=request_index,
+        request_count=request_count,
+    )
+    return raw_year_path, "full_year", "download"
+
+
 def _twcr_download_work_for_year(
     year: int,
     *,
@@ -743,3 +865,10 @@ def _twcr_grid_cell_count(area: tuple[float, float, float, float]) -> int:
     latitude_cells = max(1, int(round((north - south) / TWCR_GRID_STEP_DEGREES)) + 1)
     longitude_cells = max(1, int(round((east - west) / TWCR_GRID_STEP_DEGREES)) + 1)
     return latitude_cells * longitude_cells
+
+
+def _drop_twcr_cached_file(path: Path) -> None:
+    if not path.exists():
+        return
+    with cache_path_lock(path):
+        path.unlink(missing_ok=True)
